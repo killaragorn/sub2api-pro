@@ -115,7 +115,28 @@ func ParseQwen3Guard(content string, enabledScanners []string) (*NormalizedResul
 			return nil, &GuardError{Code: ErrorCodeInvalidResponse}
 		}
 	}
-	switch strings.ToLower(safety) {
+	if categoryLine == "" {
+		return nil, &GuardError{Code: ErrorCodeInvalidResponse}
+	}
+	return normalizeGuardClassification(
+		safety,
+		strings.Split(categoryLine, ","),
+		"",
+		enabledScanners,
+		"qwen3guard-openai",
+		"qwen3guard",
+	)
+}
+
+func normalizeGuardClassification(
+	safety string,
+	rawCategories []string,
+	evidence string,
+	enabledScanners []string,
+	backend string,
+	version string,
+) (*NormalizedResult, error) {
+	switch strings.ToLower(strings.TrimSpace(safety)) {
 	case "safe":
 		safety = "Safe"
 	case "controversial":
@@ -125,16 +146,13 @@ func ParseQwen3Guard(content string, enabledScanners []string) (*NormalizedResul
 	default:
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse}
 	}
-	if categoryLine == "" {
-		return nil, &GuardError{Code: ErrorCodeInvalidResponse}
-	}
 	enabled := make(map[string]struct{}, len(enabledScanners))
 	for _, scanner := range enabledScanners {
 		enabled[NormalizeCategory(scanner)] = struct{}{}
 	}
 	known := map[string]struct{}{}
 	unknown := map[string]struct{}{}
-	for _, raw := range strings.Split(categoryLine, ",") {
+	for _, raw := range rawCategories {
 		raw = strings.TrimSpace(raw)
 		if raw == "" || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "n/a") {
 			continue
@@ -157,7 +175,7 @@ func ParseQwen3Guard(content string, enabledScanners []string) (*NormalizedResul
 	result := &NormalizedResult{
 		Safety: safety, Categories: knownList, MatchedScanners: matched, UnknownCategories: unknownList,
 		ScannerScores: map[string]float64{}, ScannerEvidence: map[string]string{},
-		ScannerBackend: "qwen3guard-openai", ScannerVersion: "qwen3guard",
+		ScannerBackend: backend, ScannerVersion: version,
 		PolicyID: "priority", PolicyVersion: 1,
 		Decision: EventPass, RiskLevel: RiskLow, Action: ActionAllow,
 	}
@@ -174,9 +192,14 @@ func ParseQwen3Guard(content string, enabledScanners []string) (*NormalizedResul
 			result.Decision, result.RiskLevel, result.Action = EventFlag, RiskHigh, ActionWarn
 		}
 	}
+	evidence = RedactPreview(strings.TrimSpace(evidence), 160)
 	for _, category := range matched {
 		result.ScannerScores[category] = score
-		result.ScannerEvidence[category] = ScannerCatalog[category].Label
+		if evidence == "" {
+			result.ScannerEvidence[category] = ScannerCatalog[category].Label
+		} else {
+			result.ScannerEvidence[category] = evidence
+		}
 		if safety == "Controversial" && isElevatedControversial(category) {
 			result.Decision, result.RiskLevel, result.Action = EventCritical, RiskCritical, ActionBlock
 		}
@@ -208,12 +231,20 @@ func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpo
 	if err != nil {
 		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
 	}
-	payload := map[string]any{
-		"model":       endpoint.Model,
-		"messages":    []map[string]string{{"role": "user", "content": chunk}},
-		"temperature": 0,
-		"max_tokens":  64,
-		"seed":        42,
+	var payload map[string]any
+	switch endpoint.Protocol {
+	case "", EndpointProtocolQwen3Guard:
+		payload = map[string]any{
+			"model":       endpoint.Model,
+			"messages":    []map[string]string{{"role": "user", "content": chunk}},
+			"temperature": 0,
+			"max_tokens":  64,
+			"seed":        42,
+		}
+	case EndpointProtocolGroqSafeguard:
+		payload = buildGPTOSSSafeguardRequest(endpoint.Model, chunk, enabledScanners)
+	default:
+		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: errors.New("prompt guard protocol unsupported")}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -253,7 +284,15 @@ func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpo
 	if err != nil {
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
 	}
-	result, err := ParseQwen3Guard(content, enabledScanners)
+	var result *NormalizedResult
+	switch endpoint.Protocol {
+	case "", EndpointProtocolQwen3Guard:
+		result, err = ParseQwen3Guard(content, enabledScanners)
+	case EndpointProtocolGroqSafeguard:
+		result, err = ParseGPTOSSSafeguard(content, enabledScanners)
+	default:
+		err = &GuardError{Code: ErrorCodeUnavailable, Cause: errors.New("prompt guard protocol unsupported")}
+	}
 	if err != nil {
 		return nil, err
 	}

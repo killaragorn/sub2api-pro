@@ -56,6 +56,7 @@
           <div class="min-w-0 xl:block">
             <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400 xl:hidden">{{ t('admin.promptAudit.pool.model') }}</p>
             <p class="truncate text-sm font-medium text-gray-700 dark:text-dark-200" :title="endpoint.model">{{ endpoint.model }}</p>
+            <p class="mt-0.5 text-[11px] text-gray-500 dark:text-dark-400">{{ t(`admin.promptAudit.pool.protocols.${endpoint.protocol}`) }}</p>
           </div>
 
           <div>
@@ -103,6 +104,21 @@
           <input v-model="editing.id" class="input w-full" required :disabled="editingIndex >= 0" :aria-label="t('admin.promptAudit.pool.id')" />
         </label>
         <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
+          <span>{{ t('admin.promptAudit.pool.protocol') }}</span>
+          <select
+            v-model="editing.protocol"
+            class="input w-full"
+            data-test="endpoint-protocol"
+            :aria-label="t('admin.promptAudit.pool.protocol')"
+            @change="applyProtocolDefaults"
+          >
+            <option v-for="protocol in PROMPT_AUDIT_PROTOCOLS" :key="protocol.id" :value="protocol.id">
+              {{ t(`admin.promptAudit.pool.protocols.${protocol.id}`) }}
+            </option>
+          </select>
+          <span class="block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.pool.protocolHint') }}</span>
+        </label>
+        <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
           <span>{{ t('admin.promptAudit.pool.baseUrl') }}</span>
           <input v-model="editing.base_url" class="input w-full" required inputmode="url" :aria-label="t('admin.promptAudit.pool.baseUrl')" />
         </label>
@@ -143,7 +159,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import type { PromptAuditEndpointDraft, PromptProbeResult } from '../types'
-import { cloneData, createDefaultEndpoint } from '../viewModel'
+import { applyEndpointProtocolPreset, cloneData, createDefaultEndpoint, PROMPT_AUDIT_PROTOCOLS } from '../viewModel'
 
 const props = defineProps<{
   endpoints: PromptAuditEndpointDraft[]
@@ -169,6 +185,10 @@ function openEdit(endpoint: PromptAuditEndpointDraft) {
 function closeEditor() {
   editing.value = null
   editingIndex.value = -1
+}
+function applyProtocolDefaults() {
+  if (!editing.value) return
+  editing.value = applyEndpointProtocolPreset(editing.value, editing.value.protocol)
 }
 function saveEditor() {
   if (!editing.value?.id.trim() || !editing.value.name.trim() || !editing.value.base_url.trim()) return

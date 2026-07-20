@@ -18,7 +18,10 @@ const (
 	ErrorCodeConfigConflict  = "prompt_audit_config_conflict"
 	ErrorCodeRequiresEnabled = "prompt_guard_requires_audit_enabled"
 
-	DefaultGuardModel = "sileader/qwen3guard:0.6b"
+	EndpointProtocolQwen3Guard    = "openai_compatible"
+	EndpointProtocolGroqSafeguard = "groq_safeguard"
+	DefaultGuardModel             = "sileader/qwen3guard:0.6b"
+	DefaultGroqSafeguardModel     = "openai/gpt-oss-safeguard-20b"
 )
 
 type Mode string

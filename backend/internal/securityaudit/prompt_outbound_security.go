@@ -31,8 +31,8 @@ func NormalizeBaseURL(raw string) (string, error) {
 		return "", infraerrors.BadRequest("prompt_audit_invalid_base_url", "审计节点地址无效")
 	}
 	path := strings.TrimRight(parsed.EscapedPath(), "/")
-	if strings.EqualFold(path, "/v1") {
-		path = ""
+	if len(path) >= len("/v1") && strings.EqualFold(path[len(path)-len("/v1"):], "/v1") {
+		path = path[:len(path)-len("/v1")]
 	}
 	parsed.Path = path
 	parsed.RawPath = ""

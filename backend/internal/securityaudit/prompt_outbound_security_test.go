@@ -35,6 +35,9 @@ func TestNormalizeBaseURLAllowsAdministratorConfiguredDestinations(t *testing.T)
 	url, err := ChatCompletionsURL("https://guard.example.com/v1")
 	require.NoError(t, err)
 	require.Equal(t, "https://guard.example.com/v1/chat/completions", url)
+	groqURL, err := ChatCompletionsURL("https://api.groq.com/openai/v1")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.groq.com/openai/v1/chat/completions", groqURL)
 }
 
 func TestHTTPClientUsesDirectStandardDialer(t *testing.T) {
@@ -64,6 +67,68 @@ func TestOpenAICompatibleScannerRequestContract(t *testing.T) {
 	result, err := scanner.Scan(context.Background(), ActiveEndpoint{ID: "one", BaseURL: server.URL, Model: DefaultGuardModel, Token: "token", TimeoutMS: 1000}, "hello", AllScannerIDs)
 	require.NoError(t, err)
 	require.Equal(t, EventPass, result.Decision)
+}
+
+func TestGroqSafeguardScannerRequestContract(t *testing.T) {
+	const auditedText = "untrusted prompt canary"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer groq-token", r.Header.Get("Authorization"))
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, DefaultGroqSafeguardModel, payload["model"])
+		require.Equal(t, float64(0), payload["temperature"])
+		require.Equal(t, float64(512), payload["max_completion_tokens"])
+		require.Equal(t, false, payload["stream"])
+		require.Equal(t, false, payload["include_reasoning"])
+		require.NotContains(t, payload, "max_tokens")
+		require.NotContains(t, payload, "seed")
+
+		messages, ok := payload["messages"].([]any)
+		require.True(t, ok)
+		require.Len(t, messages, 2)
+		system, ok := messages[0].(map[string]any)
+		require.True(t, ok)
+		user, ok := messages[1].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "system", system["role"])
+		require.Contains(t, system["content"], "`pii`")
+		require.Contains(t, system["content"], "`jailbreak`")
+		require.NotContains(t, system["content"], "`violent`")
+		require.Equal(t, map[string]any{"role": "user", "content": auditedText}, user)
+
+		responseFormat, ok := payload["response_format"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "json_schema", responseFormat["type"])
+		jsonSchema, ok := responseFormat["json_schema"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, false, jsonSchema["strict"])
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"message": map[string]any{
+					"content": `{"safety":"unsafe","categories":["jailbreak"],"rationale":"Instruction override detected."}`,
+				},
+			}},
+		}))
+	}))
+	defer server.Close()
+
+	result, err := NewOpenAICompatibleScanner().Scan(
+		context.Background(),
+		ActiveEndpoint{
+			ID: "groq-one", Protocol: EndpointProtocolGroqSafeguard, BaseURL: server.URL,
+			Model: DefaultGroqSafeguardModel, Token: "groq-token", TimeoutMS: 1000,
+		},
+		auditedText,
+		[]string{"pii", "jailbreak"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, EventCritical, result.Decision)
+	require.Equal(t, gptOSSSafeguardBackend, result.ScannerBackend)
+	require.Equal(t, DefaultGroqSafeguardModel, result.ScannerVersion)
+	require.Equal(t, "groq-one", result.GuardEndpointID)
 }
 
 func TestOpenAICompatibleScannerFollowsRedirectAndRejectsOversize(t *testing.T) {
@@ -149,6 +214,32 @@ func TestPromptAuditProbeModelsFallbackAndResponseSafety(t *testing.T) {
 		require.True(t, result.TokenApplied)
 		require.Equal(t, http.StatusOK, result.HTTPStatus)
 		require.Zero(t, chatCalls.Load())
+	})
+
+	t.Run("Groq Safeguard verifies an actual structured completion", func(t *testing.T) {
+		var chatCalls atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/models" {
+				_, _ = w.Write([]byte(`{"data":[{"id":"` + DefaultGroqSafeguardModel + `"}]}`))
+				return
+			}
+			chatCalls.Add(1)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"choices": []any{map[string]any{
+					"message": map[string]any{
+						"content": `{"safety":"safe","categories":[],"rationale":"No enabled risk detected."}`,
+					},
+				}},
+			}))
+		}))
+		defer server.Close()
+		result := newProbeTestService().Probe(context.Background(), ProbeRequest{Endpoint: UpdateEndpoint{
+			ID: "groq-probe", Name: "Groq Safeguard", Protocol: EndpointProtocolGroqSafeguard,
+			BaseURL: server.URL, Model: DefaultGroqSafeguardModel, Token: "temporary-token",
+			TimeoutMS: 1000, InputLimit: 1024, Enabled: true,
+		}})
+		require.True(t, result.OK)
+		require.Equal(t, int64(1), chatCalls.Load())
 	})
 
 	t.Run("invalid models response performs real guard fallback", func(t *testing.T) {

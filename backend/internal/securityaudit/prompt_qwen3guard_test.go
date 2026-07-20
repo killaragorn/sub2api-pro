@@ -42,6 +42,54 @@ func TestParseQwen3GuardStrictAndPolicy(t *testing.T) {
 	}
 }
 
+func TestParseGPTOSSSafeguardStrictJSONAndPolicy(t *testing.T) {
+	result, err := ParseGPTOSSSafeguard(
+		`{"safety":"unsafe","categories":["pii","jailbreak"],"rationale":"Private data exposure and an instruction override were detected."}`,
+		[]string{"pii", "jailbreak"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, EventCritical, result.Decision)
+	require.Equal(t, ActionBlock, result.Action)
+	require.Equal(t, []string{"pii", "jailbreak"}, result.MatchedScanners)
+	require.Equal(t, gptOSSSafeguardBackend, result.ScannerBackend)
+	require.Contains(t, result.ScannerEvidence["pii"], "Private data")
+
+	controversial, err := ParseGPTOSSSafeguard(
+		`{"safety":"controversial","categories":["violent"],"rationale":"The message discusses violence without enabling it."}`,
+		[]string{"violent"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, EventFlag, controversial.Decision)
+
+	safe, err := ParseGPTOSSSafeguard(
+		`{"safety":"safe","categories":[],"rationale":"No enabled category is materially present."}`,
+		AllScannerIDs,
+	)
+	require.NoError(t, err)
+	require.Equal(t, EventPass, safe.Decision)
+
+	for _, malformed := range []string{
+		`{"safety":"safe","categories":["pii"],"rationale":"inconsistent"}`,
+		`{"safety":"safe","categories":[],"rationale":""}`,
+		`{"safety":"safe","categories":[],"rationale":"ok","extra":true}`,
+		"```json\n{\"safety\":\"safe\",\"categories\":[],\"rationale\":\"ok\"}\n```",
+	} {
+		_, err := ParseGPTOSSSafeguard(malformed, AllScannerIDs)
+		require.Error(t, err, malformed)
+	}
+}
+
+func TestGPTOSSSafeguardPolicyOnlyIncludesEnabledCategories(t *testing.T) {
+	payload := buildGPTOSSSafeguardRequest(DefaultGroqSafeguardModel, "audit this", []string{"pii", "jailbreak"})
+	messages, ok := payload["messages"].([]map[string]string)
+	require.True(t, ok)
+	require.Equal(t, "system", messages[0]["role"])
+	require.Contains(t, messages[0]["content"], "`pii`")
+	require.Contains(t, messages[0]["content"], "`jailbreak`")
+	require.NotContains(t, messages[0]["content"], "`violent`")
+	require.Equal(t, map[string]string{"role": "user", "content": "audit this"}, messages[1])
+}
+
 func TestQwen3GuardOfficialCategoriesAliasesAndUnknownAreStable(t *testing.T) {
 	official := "Violent, Non-violent Illegal Acts, Sexual Content or Sexual Acts, PII, Suicide & Self-Harm, Unethical Acts, Politically Sensitive Topics, Copyright Violation, Jailbreak"
 	result, err := ParseQwen3Guard("Safety: Unsafe\nCategories: "+official, AllScannerIDs)
@@ -99,8 +147,8 @@ func TestAggregateRequiresEveryResult(t *testing.T) {
 
 func TestAggregateDeduplicatesFactsAndUsesMostSevereEndpointMetadata(t *testing.T) {
 	result, err := AggregateResults([]*NormalizedResult{
-		{Decision: EventPass, RiskLevel: RiskLow, Action: ActionAllow, Safety: "Safe", Categories: []string{"pii"}, MatchedScanners: []string{"pii"}, ScannerScores: map[string]float64{"pii": 0}, ScannerEvidence: map[string]string{"pii": "first"}, GuardEndpointID: "safe-node", ScannerVersion: "safe-version", PolicyID: "priority", PolicyVersion: 1},
-		{Decision: EventCritical, RiskLevel: RiskCritical, Action: ActionBlock, Safety: "Unsafe", Categories: []string{"pii", "jailbreak"}, MatchedScanners: []string{"pii", "jailbreak"}, ScannerScores: map[string]float64{"pii": 1, "jailbreak": 1}, ScannerEvidence: map[string]string{"pii": "second", "jailbreak": "blocked"}, GuardEndpointID: "block-node", ScannerVersion: "block-version", PolicyID: "priority", PolicyVersion: 2},
+		{Decision: EventPass, RiskLevel: RiskLow, Action: ActionAllow, Safety: "Safe", Categories: []string{"pii"}, MatchedScanners: []string{"pii"}, ScannerScores: map[string]float64{"pii": 0}, ScannerEvidence: map[string]string{"pii": "first"}, ScannerBackend: "qwen3guard-openai", GuardEndpointID: "safe-node", ScannerVersion: "safe-version", PolicyID: "priority", PolicyVersion: 1},
+		{Decision: EventCritical, RiskLevel: RiskCritical, Action: ActionBlock, Safety: "Unsafe", Categories: []string{"pii", "jailbreak"}, MatchedScanners: []string{"pii", "jailbreak"}, ScannerScores: map[string]float64{"pii": 1, "jailbreak": 1}, ScannerEvidence: map[string]string{"pii": "second", "jailbreak": "blocked"}, ScannerBackend: gptOSSSafeguardBackend, GuardEndpointID: "block-node", ScannerVersion: "block-version", PolicyID: "priority", PolicyVersion: 2},
 	}, 7*time.Millisecond)
 	require.NoError(t, err)
 	require.Equal(t, []string{"pii", "jailbreak"}, result.Categories)
@@ -108,6 +156,7 @@ func TestAggregateDeduplicatesFactsAndUsesMostSevereEndpointMetadata(t *testing.
 	require.Equal(t, "first", result.ScannerEvidence["pii"], "evidence is deterministically first-seen")
 	require.Equal(t, "block-node", result.GuardEndpointID)
 	require.Equal(t, "block-version", result.ScannerVersion)
+	require.Equal(t, gptOSSSafeguardBackend, result.ScannerBackend)
 	require.Equal(t, 2, result.PolicyVersion)
 	require.Equal(t, 7, result.LatencyMS)
 }

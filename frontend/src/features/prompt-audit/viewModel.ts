@@ -2,11 +2,33 @@ import type {
   PromptAuditConfig,
   PromptAuditDraft,
   PromptAuditEndpointDraft,
+  PromptAuditEndpointProtocol,
   PromptAuditUpdateRequest,
   PromptEventFilters,
 } from './types'
 
 export const DEFAULT_GUARD_MODEL = 'sileader/qwen3guard:0.6b'
+export const DEFAULT_GROQ_SAFEGUARD_MODEL = 'openai/gpt-oss-safeguard-20b'
+
+export const PROMPT_AUDIT_PROTOCOLS: ReadonlyArray<{
+  id: PromptAuditEndpointProtocol
+  baseUrl: string
+  model: string
+  timeoutMs: number
+}> = [
+  {
+    id: 'openai_compatible',
+    baseUrl: 'http://127.0.0.1:8000',
+    model: DEFAULT_GUARD_MODEL,
+    timeoutMs: 3000,
+  },
+  {
+    id: 'groq_safeguard',
+    baseUrl: 'https://api.groq.com/openai',
+    model: DEFAULT_GROQ_SAFEGUARD_MODEL,
+    timeoutMs: 10000,
+  },
+]
 
 export const SCANNER_CATALOG = [
   { id: 'violent', label: 'Violent' },
@@ -57,6 +79,22 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
   }
 }
 
+export function applyEndpointProtocolPreset(
+  endpoint: PromptAuditEndpointDraft,
+  protocol: PromptAuditEndpointProtocol,
+): PromptAuditEndpointDraft {
+  const preset = PROMPT_AUDIT_PROTOCOLS.find((item) => item.id === protocol)
+  if (!preset) return { ...cloneData(endpoint), protocol }
+  return {
+    ...cloneData(endpoint),
+    protocol,
+    base_url: preset.baseUrl,
+    model: preset.model,
+    timeout_ms: preset.timeoutMs,
+  }
+}
+
+
 export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRequest {
   return {
     expected_config_version: draft.config_version,
@@ -72,9 +110,9 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     endpoints: draft.endpoints.map((endpoint) => ({
       id: endpoint.id.trim(),
       name: endpoint.name.trim(),
-      protocol: 'openai_compatible',
+      protocol: endpoint.protocol,
       base_url: endpoint.base_url.trim(),
-      model: endpoint.model.trim() || DEFAULT_GUARD_MODEL,
+      model: endpoint.model.trim() || PROMPT_AUDIT_PROTOCOLS.find((item) => item.id === endpoint.protocol)?.model || DEFAULT_GUARD_MODEL,
       token: endpoint.token.trim() || undefined,
       clear_token: endpoint.clear_token,
       timeout_ms: Number(endpoint.timeout_ms),

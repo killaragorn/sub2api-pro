@@ -228,12 +228,12 @@ func normalizeStorageConfig(cfg *storageConfig) {
 		ep.Name = strings.TrimSpace(ep.Name)
 		ep.Protocol = strings.TrimSpace(ep.Protocol)
 		if ep.Protocol == "" {
-			ep.Protocol = "openai_compatible"
+			ep.Protocol = EndpointProtocolQwen3Guard
 		}
 		ep.BaseURL = strings.TrimSpace(ep.BaseURL)
 		ep.Model = strings.TrimSpace(ep.Model)
 		if ep.Model == "" {
-			ep.Model = DefaultGuardModel
+			ep.Model = defaultGuardModel(ep.Protocol)
 		}
 		if ep.TimeoutMS == 0 {
 			ep.TimeoutMS = DefaultTimeoutMS
@@ -273,8 +273,10 @@ func validateStorageConfig(cfg storageConfig) error {
 			return infraerrors.BadRequest("prompt_audit_duplicate_endpoint", "审计节点 ID 不能重复")
 		}
 		seen[ep.ID] = struct{}{}
-		if ep.Protocol != "openai_compatible" {
-			return infraerrors.BadRequest("prompt_audit_invalid_endpoint_protocol", "审计节点仅支持 OpenAI 兼容协议")
+		switch ep.Protocol {
+		case EndpointProtocolQwen3Guard, EndpointProtocolGroqSafeguard:
+		default:
+			return infraerrors.BadRequest("prompt_audit_invalid_endpoint_protocol", "审计节点协议不受支持")
 		}
 		if _, err := NormalizeBaseURL(ep.BaseURL); err != nil {
 			return err
@@ -332,6 +334,13 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 		}
 	}
 	return nil
+}
+
+func defaultGuardModel(protocol string) string {
+	if protocol == EndpointProtocolGroqSafeguard {
+		return DefaultGroqSafeguardModel
+	}
+	return DefaultGuardModel
 }
 
 func (cfg ActiveConfig) EffectiveMode() Mode {

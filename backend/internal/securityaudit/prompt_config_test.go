@@ -229,6 +229,30 @@ func TestParseLegacyConfigDefaultsMissingFieldsWithoutEnablingBlocking(t *testin
 	require.True(t, storage.AllGroups)
 }
 
+func TestGroqSafeguardEndpointDefaultsAndValidation(t *testing.T) {
+	storage, err := ParseStorageConfig(`{
+		"enabled": false,
+		"config_version": 3,
+		"endpoints": [{
+			"id": "groq-one",
+			"name": "Groq Safeguard",
+			"protocol": "groq_safeguard",
+			"base_url": "https://api.groq.com/openai",
+			"timeout_ms": 10000,
+			"input_limit": 4000,
+			"enabled": true
+		}]
+	}`)
+	require.NoError(t, err)
+	require.Equal(t, EndpointProtocolGroqSafeguard, storage.Endpoints[0].Protocol)
+	require.Equal(t, DefaultGroqSafeguardModel, storage.Endpoints[0].Model)
+
+	storage.Endpoints[0].Protocol = "unsupported"
+	err = validateStorageConfig(storage)
+	require.Error(t, err)
+	require.Equal(t, "prompt_audit_invalid_endpoint_protocol", infraerrors.Reason(err))
+}
+
 func TestUpdateConfigStrictBoundsAndKnownValues(t *testing.T) {
 	valid := promptAuditUpdateRequest(1, 1, "")
 	require.NoError(t, validateUpdateConfigRequest(valid))

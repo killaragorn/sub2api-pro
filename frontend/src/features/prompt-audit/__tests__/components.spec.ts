@@ -50,6 +50,28 @@ describe('Prompt Audit components', () => {
     expect(wrapper.emitted('probe')?.[0]?.[0]).toMatchObject({ id: 'guard-1' })
   })
 
+  it('selects the Groq Safeguard preset in the endpoint editor', async () => {
+    const wrapper = mount(EndpointPool, {
+      props: { endpoints: [endpoint()], probeResults: {}, probingIds: [] },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    const edit = wrapper.findAll('button').find((button) => button.text().includes('common.edit'))
+    await edit!.trigger('click')
+    await wrapper.get<HTMLSelectElement>('[data-test="endpoint-protocol"]').setValue('groq_safeguard')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.baseUrl"]').element.value).toBe('https://api.groq.com/openai')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.model"]').element.value).toBe('openai/gpt-oss-safeguard-20b')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.timeout"]').element.value).toBe('10000')
+
+    await wrapper.get('[data-test="save-endpoint"]').trigger('click')
+    const updated = wrapper.emitted('update:endpoints')?.at(-1)?.[0] as PromptAuditEndpointDraft[]
+    expect(updated[0]).toMatchObject({
+      protocol: 'groq_safeguard',
+      base_url: 'https://api.groq.com/openai',
+      model: 'openai/gpt-oss-safeguard-20b',
+      timeout_ms: 10000,
+    })
+  })
+
   it('supports group search, stale configured groups, nine scanners, and bounded worker inputs', async () => {
     const draft: PromptAuditDraft = {
       enabled: true, blocking_enabled: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',

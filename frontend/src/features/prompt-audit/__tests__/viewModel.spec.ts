@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { PromptAuditConfig } from '../types'
 import {
+  applyEndpointProtocolPreset,
   buildUpdateRequest,
   configToDraft,
   draftFingerprint,
   emptyEventFilters,
   eventFilterPayload,
   hasExplicitDeleteRange,
+  DEFAULT_GROQ_SAFEGUARD_MODEL,
   SCANNER_CATALOG,
 } from '../viewModel'
 
@@ -54,6 +56,24 @@ describe('Prompt Audit view model', () => {
     draft.endpoints[0].token = ''
     draft.endpoints[0].clear_token = true
     expect(buildUpdateRequest(draft).endpoints[0]).toMatchObject({ token: undefined, clear_token: true })
+  })
+
+  it('preserves the selected protocol and applies Groq Safeguard defaults', () => {
+    const draft = configToDraft(config())
+    draft.endpoints[0] = applyEndpointProtocolPreset(draft.endpoints[0], 'groq_safeguard')
+    expect(draft.endpoints[0]).toMatchObject({
+      protocol: 'groq_safeguard',
+      base_url: 'https://api.groq.com/openai',
+      model: DEFAULT_GROQ_SAFEGUARD_MODEL,
+      timeout_ms: 10000,
+    })
+    expect(buildUpdateRequest(draft).endpoints[0]).toMatchObject({
+      protocol: 'groq_safeguard',
+      model: DEFAULT_GROQ_SAFEGUARD_MODEL,
+    })
+
+    draft.endpoints[0].model = ''
+    expect(buildUpdateRequest(draft).endpoints[0].model).toBe(DEFAULT_GROQ_SAFEGUARD_MODEL)
   })
 
   it('tracks dirty state from the full normalized save payload', () => {
