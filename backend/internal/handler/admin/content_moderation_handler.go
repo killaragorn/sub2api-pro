@@ -200,6 +200,20 @@ func (h *ContentModerationHandler) ListLogs(c *gin.Context) {
 	response.Paginated(c, items, pageResult.Total, pageResult.Page, pageResult.PageSize)
 }
 
+func (h *ContentModerationHandler) GetCyberPolicyRequestAudit(c *gin.Context) {
+	logID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || logID <= 0 {
+		response.BadRequest(c, "Invalid content moderation log id")
+		return
+	}
+	item, err := h.service.GetCyberPolicyRequestAudit(c.Request.Context(), logID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, item)
+}
+
 func (h *ContentModerationHandler) UnbanUser(c *gin.Context) {
 	userID, err := strconv.ParseInt(strings.TrimSpace(c.Param("user_id")), 10, 64)
 	if err != nil || userID <= 0 {

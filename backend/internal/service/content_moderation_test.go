@@ -85,6 +85,9 @@ func (r *contentModerationTestRepo) CreateLog(ctx context.Context, log *ContentM
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if log != nil {
+		if log.ID == 0 {
+			log.ID = int64(len(r.logs) + 1)
+		}
 		r.logs = append(r.logs, *log)
 	}
 	return nil
@@ -92,6 +95,10 @@ func (r *contentModerationTestRepo) CreateLog(ctx context.Context, log *ContentM
 
 func (r *contentModerationTestRepo) ListLogs(ctx context.Context, filter ContentModerationLogFilter) ([]ContentModerationLog, *pagination.PaginationResult, error) {
 	return nil, nil, nil
+}
+
+func (r *contentModerationTestRepo) GetCyberPolicyRequestAudit(ctx context.Context, id int64) (*CyberPolicyRequestAudit, error) {
+	return nil, ErrCyberPolicyRequestAuditNotFound
 }
 
 func (r *contentModerationTestRepo) CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error) {
@@ -118,6 +125,19 @@ func (r *contentModerationTestRepo) CleanupExpiredLogs(ctx context.Context, hitB
 }
 
 func (r *contentModerationTestRepo) UpdateLogEmailSent(ctx context.Context, id int64, sent bool) error {
+	return nil
+}
+
+func (r *contentModerationTestRepo) UpdateCyberPolicyOutcome(ctx context.Context, id int64, violationCount int, autoBanned bool, emailSent bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.logs {
+		if r.logs[i].ID == id {
+			r.logs[i].ViolationCount = violationCount
+			r.logs[i].AutoBanned = autoBanned
+			r.logs[i].EmailSent = emailSent
+		}
+	}
 	return nil
 }
 

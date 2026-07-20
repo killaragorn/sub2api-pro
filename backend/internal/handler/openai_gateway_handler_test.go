@@ -1197,6 +1197,9 @@ func (r *contentModerationHandlerTestRepo) CreateLog(ctx context.Context, log *s
 	if log != nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		if log.ID == 0 {
+			log.ID = int64(len(r.logs) + 1)
+		}
 		r.logs = append(r.logs, *log)
 	}
 	return nil
@@ -1218,6 +1221,10 @@ func (r *contentModerationHandlerTestRepo) ListLogs(ctx context.Context, filter 
 	return nil, nil, nil
 }
 
+func (r *contentModerationHandlerTestRepo) GetCyberPolicyRequestAudit(ctx context.Context, id int64) (*service.CyberPolicyRequestAudit, error) {
+	return nil, service.ErrCyberPolicyRequestAuditNotFound
+}
+
 func (r *contentModerationHandlerTestRepo) CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error) {
 	return 0, nil
 }
@@ -1227,6 +1234,10 @@ func (r *contentModerationHandlerTestRepo) CleanupExpiredLogs(ctx context.Contex
 }
 
 func (r *contentModerationHandlerTestRepo) UpdateLogEmailSent(ctx context.Context, id int64, sent bool) error {
+	return nil
+}
+
+func (r *contentModerationHandlerTestRepo) UpdateCyberPolicyOutcome(ctx context.Context, id int64, violationCount int, autoBanned bool, emailSent bool) error {
 	return nil
 }
 

@@ -11,6 +11,7 @@ const {
   updateConfig,
   getStatus,
   listLogs,
+  getCyberPolicyRequestAudit,
   getGroups,
   showError,
   showSuccess,
@@ -19,6 +20,7 @@ const {
   updateConfig: vi.fn(),
   getStatus: vi.fn(),
   listLogs: vi.fn(),
+  getCyberPolicyRequestAudit: vi.fn(),
   getGroups: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -31,6 +33,7 @@ vi.mock('@/api/admin', () => ({
       updateConfig,
       getStatus,
       listLogs,
+      getCyberPolicyRequestAudit,
       testAPIKeys: vi.fn(),
       deleteFlaggedHash: vi.fn(),
       clearFlaggedHashes: vi.fn(),
@@ -91,6 +94,7 @@ const baseConfig = (): ContentModerationConfig => ({
   auto_ban_enabled: true,
   ban_threshold: 10,
   violation_window_hours: 720,
+  cyber_policy_exclude_from_ban_count: false,
   retry_count: 2,
   hit_retention_days: 180,
   non_hit_retention_days: 3,
@@ -190,6 +194,7 @@ describe('admin RiskControlView', () => {
     updateConfig.mockReset()
     getStatus.mockReset()
     listLogs.mockReset()
+    getCyberPolicyRequestAudit.mockReset()
     getGroups.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
@@ -197,6 +202,15 @@ describe('admin RiskControlView', () => {
     getConfig.mockResolvedValue(baseConfig())
     getStatus.mockResolvedValue(runtimeStatus())
     listLogs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
+    getCyberPolicyRequestAudit.mockResolvedValue({
+      log_id: 1,
+      request_id: 'req-1',
+      protocol: 'openai_responses',
+      request_body: '{"input":"audit me"}',
+      original_bytes: 20,
+      stored_bytes: 20,
+      truncated: false,
+    })
     getGroups.mockResolvedValue([])
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
@@ -403,5 +417,79 @@ describe('admin RiskControlView', () => {
       'max-h-[280px]',
       'overflow-y-auto',
     ]))
+  })
+
+  it('loads a cyber request snapshot only when its detail is opened', async () => {
+    listLogs.mockResolvedValue({
+      items: [{
+        id: 77,
+        request_id: 'req-cyber-77',
+        user_id: 9,
+        user_email: 'audit@example.com',
+        api_key_id: 3,
+        api_key_name: 'audit-key',
+        group_id: 2,
+        group_name: 'default',
+        endpoint: '/v1/responses',
+        provider: 'openai',
+        model: 'gpt-5',
+        mode: 'post_upstream',
+        action: 'cyber_policy',
+        flagged: true,
+        highest_category: 'cyber_policy',
+        highest_score: 1,
+        matched_keyword: '',
+        category_scores: {},
+        threshold_snapshot: {},
+        input_excerpt: '',
+        upstream_latency_ms: null,
+        error: 'cyber_policy: blocked',
+        violation_count: 1,
+        auto_banned: false,
+        email_sent: false,
+        user_status: 'active',
+        queue_delay_ms: null,
+        cyber_request_available: true,
+        created_at: '2026-07-20T12:00:00Z',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    getCyberPolicyRequestAudit.mockResolvedValue({
+      log_id: 77,
+      request_id: 'req-cyber-77',
+      protocol: 'openai_responses',
+      request_body: '{"input":"redacted audit request"}',
+      original_bytes: 70000,
+      stored_bytes: 65536,
+      truncated: true,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        },
+      },
+    })
+
+    await flushPromises()
+    expect(getCyberPolicyRequestAudit).not.toHaveBeenCalled()
+
+    await findButtonByText(wrapper, 'admin.riskControl.cyberRequestSaved').trigger('click')
+    await flushPromises()
+
+    expect(getCyberPolicyRequestAudit).toHaveBeenCalledWith(77)
+    expect(wrapper.get('[data-test="cyber-audit-body"]').text()).toContain('redacted audit request')
+    expect(wrapper.get('[data-test="cyber-audit-truncated"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('cyber_policy: blocked')
   })
 })

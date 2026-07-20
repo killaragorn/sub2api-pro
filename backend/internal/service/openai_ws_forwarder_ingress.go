@@ -462,7 +462,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		bridgeReplayInputExists := false
 		for turn := 1; ; turn++ {
 			if turn > 1 && hooks != nil && hooks.BeforeRequest != nil {
-				if err := hooks.BeforeRequest(turn, currentBridgePayload.payloadRaw, currentBridgePayload.originalModel); err != nil {
+				if err := hooks.BeforeRequest(turn, currentBridgePayload.rawForHash, currentBridgePayload.originalModel); err != nil {
 					return err
 				}
 			}
@@ -1012,6 +1012,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	currentPayload := firstPayload.payloadRaw
+	currentAuditPayload := firstPayload.rawForHash
 	currentOriginalModel := firstPayload.originalModel
 	currentImageBillingModel := firstPayload.imageBillingModel
 	currentImageSizeTier := firstPayload.imageSizeTier
@@ -1198,7 +1199,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	for {
 		if turn > 1 && !skipBeforeTurn && hooks != nil && hooks.BeforeRequest != nil {
-			if err := hooks.BeforeRequest(turn, currentPayload, currentOriginalModel); err != nil {
+			if err := hooks.BeforeRequest(turn, currentAuditPayload, currentOriginalModel); err != nil {
 				return err
 			}
 		}
@@ -1633,6 +1634,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		currentPayload = nextPayload.payloadRaw
+		currentAuditPayload = nextPayload.rawForHash
 		currentOriginalModel = nextPayload.originalModel
 		currentImageBillingModel = nextPayload.imageBillingModel
 		currentImageSizeTier = nextPayload.imageSizeTier

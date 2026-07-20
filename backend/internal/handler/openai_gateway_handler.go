@@ -474,7 +474,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, service.ContentModerationProtocolOpenAIResponses, body, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1006,7 +1006,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, c, body)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, channelMappingMsg.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, service.ContentModerationProtocolAnthropicMessages, body, err != nil, cyberBlockKeyMsg, channelMappingMsg.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1728,9 +1728,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		)
 
 		var requestPayloadHash string
+		cyberAuditPayload := append([]byte(nil), firstMessage...)
 		hooks := &service.OpenAIWSIngressHooks{
 			InitialRequestModel: reqModel,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
+				cyberAuditPayload = append(cyberAuditPayload[:0], payload...)
 				if turn == 1 {
 					return nil
 				}
@@ -1791,7 +1793,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				// 届时 defer 已清除标记）。
 				defer clearCyberPolicyTurnState(c)
 				releaseTurnSlots()
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, turnErr != nil, cyberBlockKey, channelMappingWS.ToUsageFields(reqModel, ""), requestPayloadHash)
+				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, service.ContentModerationProtocolOpenAIResponses, cyberAuditPayload, turnErr != nil, cyberBlockKey, channelMappingWS.ToUsageFields(reqModel, ""), requestPayloadHash)
 				if service.GetOpsCyberPolicy(c) != nil {
 					cyberBlockedThisConn = true
 				}
@@ -2776,11 +2778,11 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 	enqueueOpsErrorLog(h.opsService, buildCyberSessionBlockedOpsEntry(meta))
 }
 
-// recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，异步写风控日志/邮件，
-// 并在 forward 返回错误时写一条 tokens=0 用量行。标记由 gateway 服务层在透传 cyber 后设置；
-// 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
-// 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
-func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string) {
+// recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，同步保存风控日志和
+// 脱敏后的原始请求快照，再异步处理邮件、封禁、用量及运维日志。标记由 gateway 服务层在
+// 透传 cyber 后设置；forwardErrored 为 true 时才写用量行，避免与正常 RecordUsage
+// (forward 成功路径)重复。每请求至多记录一次。
+func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, protocol string, requestBody []byte, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
 		return
@@ -2855,26 +2857,43 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		ClientIP:        clientIPStr,
 		CreatedAt:       time.Now(),
 	}
+	var cyberLog *service.ContentModerationLog
+	if cmSvc != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var err error
+		cyberLog, err = cmSvc.RecordCyberPolicyEvent(persistCtx, service.CyberPolicyRecordInput{
+			RequestID:       requestID,
+			UserID:          userID,
+			UserEmail:       userEmail,
+			APIKeyID:        apiKeyID,
+			APIKeyName:      apiKeyName,
+			GroupID:         groupID,
+			GroupName:       groupName,
+			Endpoint:        inboundEndpoint,
+			Model:           model,
+			UpstreamMessage: mark.Message,
+			UpstreamBody:    mark.Body,
+			UpstreamStatus:  mark.UpstreamStatus,
+			UpstreamInTok:   mark.UpstreamInTok,
+			UpstreamOutTok:  mark.UpstreamOutTok,
+			Protocol:        protocol,
+			RequestBody:     requestBody,
+		})
+		cancel()
+		if err != nil {
+			logger.L().With(
+				zap.String("component", "handler.openai_gateway.cyber_audit"),
+				zap.String("request_id", requestID),
+				zap.Int64("user_id", userID),
+				zap.Int64("account_id", accountID),
+			).Error("openai.cyber_policy_audit_persist_failed", zap.Error(err))
+		}
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if cmSvc != nil {
-			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
-				RequestID:       requestID,
-				UserID:          userID,
-				UserEmail:       userEmail,
-				APIKeyID:        apiKeyID,
-				APIKeyName:      apiKeyName,
-				GroupID:         groupID,
-				GroupName:       groupName,
-				Endpoint:        inboundEndpoint,
-				Model:           model,
-				UpstreamMessage: mark.Message,
-				UpstreamBody:    mark.Body,
-				UpstreamStatus:  mark.UpstreamStatus,
-				UpstreamInTok:   mark.UpstreamInTok,
-				UpstreamOutTok:  mark.UpstreamOutTok,
-			})
+		if cmSvc != nil && cyberLog != nil {
+			cmSvc.FinalizeCyberPolicyEvent(ctx, cyberLog)
 		}
 		if forwardErrored && gwSvc != nil {
 			gwSvc.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{

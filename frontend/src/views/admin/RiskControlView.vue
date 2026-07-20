@@ -1087,10 +1087,12 @@
             </div>
           </div>
 
-          <div class="rounded-xl border border-gray-100 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <div class="rounded-lg border border-gray-100 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.inputDetailContent') }}</p>
+                <p class="text-sm font-semibold text-gray-900 dark:text-white">
+                  {{ inputDetailRow.action === 'cyber_policy' ? t('admin.riskControl.cyberRequestContent') : t('admin.riskControl.inputDetailContent') }}
+                </p>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {{ inputDetailRow.endpoint || '-' }} · {{ inputDetailRow.provider || '-' }} / {{ inputDetailRow.model || '-' }}
                 </p>
@@ -1099,7 +1101,34 @@
                 {{ inputDetailRow.group_name }}
               </span>
             </div>
-            <pre class="mt-4 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-950 p-4 text-sm leading-6 text-gray-100 shadow-inner dark:bg-black/50">{{ inputDetailText }}</pre>
+            <template v-if="inputDetailRow.action === 'cyber_policy'">
+              <div v-if="cyberAuditLoading" data-test="cyber-audit-loading" class="mt-4 flex min-h-28 items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                <Icon name="refresh" size="sm" class="animate-spin" />
+                {{ t('admin.riskControl.cyberRequestLoading') }}
+              </div>
+              <div v-else-if="cyberAuditError" data-test="cyber-audit-error" class="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-900/20 dark:text-red-300">
+                {{ cyberAuditError }}
+              </div>
+              <div v-else-if="!cyberRequestAudit" data-test="cyber-audit-unavailable" class="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-300">
+                {{ t('admin.riskControl.cyberRequestUnavailable') }}
+              </div>
+              <template v-else>
+                <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                  <span>{{ t('admin.riskControl.cyberRequestProtocol') }}: {{ cyberRequestAudit.protocol || '-' }}</span>
+                  <span>{{ t('admin.riskControl.cyberRequestSize', { stored: cyberRequestAudit.stored_bytes, original: cyberRequestAudit.original_bytes }) }}</span>
+                </div>
+                <div v-if="cyberRequestAudit.truncated" data-test="cyber-audit-truncated" class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300">
+                  {{ t('admin.riskControl.cyberRequestTruncated') }}
+                </div>
+                <pre data-test="cyber-audit-body" class="mt-4 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-gray-950 p-4 text-sm leading-6 text-gray-100 dark:bg-black/50">{{ cyberRequestBodyText }}</pre>
+              </template>
+            </template>
+            <pre v-else class="mt-4 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-gray-950 p-4 text-sm leading-6 text-gray-100 dark:bg-black/50">{{ inputDetailText }}</pre>
+          </div>
+
+          <div v-if="inputDetailRow.action === 'cyber_policy' && inputDetailRow.error" class="rounded-lg border border-gray-100 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+            <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.cyberUpstreamEvidence') }}</p>
+            <pre class="mt-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-gray-950 p-4 text-sm leading-6 text-gray-100 dark:bg-black/50">{{ inputDetailRow.error }}</pre>
           </div>
         </div>
 
@@ -1133,6 +1162,7 @@ import type {
   ContentModerationModelFilterType,
   ContentModerationRuntimeStatus,
   ContentModerationTestAuditResult,
+  CyberPolicyRequestAudit,
   KeywordBlockingMode,
   ModerationMode,
   UpdateContentModerationConfig,
@@ -1214,6 +1244,10 @@ const moderationTestPrompt = ref('')
 const moderationTestImages = ref<string[]>([])
 const moderationTestResult = ref<ContentModerationTestAuditResult | null>(null)
 const inputDetailRow = ref<ContentModerationLog | null>(null)
+const cyberRequestAudit = ref<CyberPolicyRequestAudit | null>(null)
+const cyberAuditLoading = ref(false)
+const cyberAuditError = ref('')
+let cyberAuditRequestSequence = 0
 let statusTimer: number | null = null
 
 const configForm = reactive({
@@ -1581,6 +1615,16 @@ const inputDetailText = computed(() => {
   return inputDetailRow.value.input_excerpt || inputDetailRow.value.error || '-'
 })
 
+const cyberRequestBodyText = computed(() => {
+  const body = cyberRequestAudit.value?.request_body || '-'
+  if (cyberRequestAudit.value?.truncated) return body
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2)
+  } catch {
+    return body
+  }
+})
+
 const queueUsagePercent = computed(() => `${Math.min(100, Math.max(0, status.value?.queue_usage_percent ?? 0)).toFixed(1)}%`)
 
 const queueUsageStyle = computed(() => ({
@@ -1867,15 +1911,45 @@ function canUnbanRow(row: ContentModerationLog): boolean {
 }
 
 function inputSummaryText(row: ContentModerationLog): string {
+  if (row.action === 'cyber_policy') {
+    return row.cyber_request_available
+      ? t('admin.riskControl.cyberRequestSaved')
+      : t('admin.riskControl.cyberRequestUnavailable')
+  }
   return row.input_excerpt || row.error || '-'
 }
 
-function openInputDetail(row: ContentModerationLog) {
+async function openInputDetail(row: ContentModerationLog) {
   inputDetailRow.value = row
+  cyberRequestAudit.value = null
+  cyberAuditError.value = ''
+  cyberAuditLoading.value = false
+  const sequence = ++cyberAuditRequestSequence
+  if (row.action !== 'cyber_policy' || !row.cyber_request_available) return
+
+  cyberAuditLoading.value = true
+  try {
+    const audit = await adminAPI.riskControl.getCyberPolicyRequestAudit(row.id)
+    if (sequence === cyberAuditRequestSequence && inputDetailRow.value?.id === row.id) {
+      cyberRequestAudit.value = audit
+    }
+  } catch (err: unknown) {
+    if (sequence === cyberAuditRequestSequence && inputDetailRow.value?.id === row.id) {
+      cyberAuditError.value = extractApiErrorMessage(err, t('admin.riskControl.cyberRequestLoadFailed'))
+    }
+  } finally {
+    if (sequence === cyberAuditRequestSequence) {
+      cyberAuditLoading.value = false
+    }
+  }
 }
 
 function closeInputDetail() {
+  cyberAuditRequestSequence++
   inputDetailRow.value = null
+  cyberRequestAudit.value = null
+  cyberAuditLoading.value = false
+  cyberAuditError.value = ''
 }
 
 async function unbanUser(row: ContentModerationLog) {

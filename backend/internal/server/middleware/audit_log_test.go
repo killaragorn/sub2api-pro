@@ -145,3 +145,11 @@ func TestPromptAuditMutationAuditRoutesHaveStableActionsAndOmitBodies(t *testing
 		require.Truef(t, omitted, "%s must not persist its credential or confirmation-bearing body", route)
 	}
 }
+
+func TestCyberPolicyRequestDetailIsAuditedAsSensitiveRead(t *testing.T) {
+	require.Equal(
+		t,
+		"admin.risk_control.cyber_request.read",
+		auditSensitiveReads["GET /api/v1/admin/risk-control/logs/:id/cyber-request"],
+	)
+}

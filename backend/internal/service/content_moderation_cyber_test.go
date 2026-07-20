@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -40,12 +41,23 @@ func (r *cyberOrderingTestRepo) ListLogs(ctx context.Context, filter ContentMode
 	return nil, nil, nil
 }
 
+func (r *cyberOrderingTestRepo) GetCyberPolicyRequestAudit(ctx context.Context, id int64) (*CyberPolicyRequestAudit, error) {
+	return nil, ErrCyberPolicyRequestAuditNotFound
+}
+
 func (r *cyberOrderingTestRepo) CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error) {
 	return 0, nil
 }
 
 func (r *cyberOrderingTestRepo) CleanupExpiredLogs(ctx context.Context, hitBefore time.Time, nonHitBefore time.Time) (*ContentModerationCleanupResult, error) {
 	return &ContentModerationCleanupResult{}, nil
+}
+
+func (r *cyberOrderingTestRepo) UpdateCyberPolicyOutcome(ctx context.Context, id int64, violationCount int, autoBanned bool, emailSent bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, "update_outcome")
+	return nil
 }
 
 func (r *cyberOrderingTestRepo) snapshot() []string {
@@ -64,7 +76,7 @@ func (r *cyberOrderingTestRepo) snapshotEmailSents() []bool {
 	return out
 }
 
-func TestRecordCyberPolicyEvent_DisabledWhenRiskControlOff(t *testing.T) {
+func TestRecordCyberPolicyEvent_AlwaysPersistsWhenRiskControlOff(t *testing.T) {
 	repo := &contentModerationTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
@@ -78,7 +90,7 @@ func TestRecordCyberPolicyEvent_DisabledWhenRiskControlOff(t *testing.T) {
 		nil,
 	)
 
-	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+	log, err := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -86,9 +98,18 @@ func TestRecordCyberPolicyEvent_DisabledWhenRiskControlOff(t *testing.T) {
 		UpstreamMessage: "flagged",
 		UpstreamBody:    `{"error":{"code":"cyber_policy"}}`,
 		UpstreamStatus:  400,
+		Protocol:        ContentModerationProtocolOpenAIResponses,
+		RequestBody:     []byte(`{"model":"gpt-5","input":"audit me"}`),
 	})
 
-	require.Empty(t, repo.snapshotLogs(), "CreateLog must NOT be called when risk_control_enabled is off")
+	require.NoError(t, err)
+	require.NotNil(t, log)
+	svc.FinalizeCyberPolicyEvent(context.Background(), log)
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1, "cyber audit must be persisted even when risk_control_enabled is off")
+	require.True(t, logs[0].CyberRequestAvailable)
+	require.Contains(t, logs[0].CyberRequestSnapshot, "audit me")
+	require.Zero(t, logs[0].ViolationCount, "disabled risk control must skip enforcement side effects")
 }
 
 func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
@@ -105,7 +126,7 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 		nil, // emailService=nil: email path safely skipped
 	)
 
-	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+	log, err := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -114,43 +135,45 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 		UpstreamBody:    `{"error":{"code":"cyber_policy"}}`,
 		UpstreamStatus:  400,
 	})
+	require.NoError(t, err)
+	svc.FinalizeCyberPolicyEvent(context.Background(), log)
 
 	logs := repo.snapshotLogs()
 	require.Len(t, logs, 1)
-	log := logs[0]
+	stored := logs[0]
 
-	require.Equal(t, "cyber_policy", log.Action)
-	require.True(t, log.Flagged)
-	require.Equal(t, "cyber_policy", log.HighestCategory)
-	require.Contains(t, log.Error, "flagged")
-	require.False(t, log.AutoBanned)
+	require.Equal(t, "cyber_policy", stored.Action)
+	require.True(t, stored.Flagged)
+	require.Equal(t, "cyber_policy", stored.HighestCategory)
+	require.Contains(t, stored.Error, "flagged")
+	require.False(t, stored.AutoBanned)
 	// emailService is nil, so EmailSent must be false
-	require.False(t, log.EmailSent)
+	require.False(t, stored.EmailSent)
 
 	// UserID pointer must be set
-	require.NotNil(t, log.UserID)
-	require.Equal(t, int64(1), *log.UserID)
+	require.NotNil(t, stored.UserID)
+	require.Equal(t, int64(1), *stored.UserID)
 
 	// score for cyber_policy is always 1.0
-	require.Equal(t, 1.0, log.HighestScore)
+	require.Equal(t, 1.0, stored.HighestScore)
 
 	// mode must be post_upstream
-	require.Equal(t, "post_upstream", log.Mode)
+	require.Equal(t, "post_upstream", stored.Mode)
 
 	// provider
-	require.Equal(t, "openai", log.Provider)
+	require.Equal(t, "openai", stored.Provider)
 
 	// model
-	require.Equal(t, "gpt-5", log.Model)
+	require.Equal(t, "gpt-5", stored.Model)
 
 	// endpoint
-	require.Equal(t, "/v1/responses", log.Endpoint)
+	require.Equal(t, "/v1/responses", stored.Endpoint)
 
 	// violation count >= 1 (side-effects ran)
-	require.GreaterOrEqual(t, log.ViolationCount, 1)
+	require.GreaterOrEqual(t, stored.ViolationCount, 1)
 
 	// Error field should also contain the upstream body JSON
-	require.True(t, strings.Contains(log.Error, "cyber_policy") || strings.Contains(log.Error, "flagged"),
+	require.True(t, strings.Contains(stored.Error, "cyber_policy") || strings.Contains(stored.Error, "flagged"),
 		"Error should mention flagged or cyber_policy")
 }
 
@@ -182,13 +205,15 @@ func TestRecordCyberPolicyEvent_CreateLogBeforeEmail(t *testing.T) {
 		nil, // emailService=nil: email path safely skipped; see doc comment above
 	)
 
-	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+	log, err := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
 		RequestID:       "req-1",
 		UserID:          7,
 		UserEmail:       "u@example.com",
 		Model:           "gpt-5",
 		UpstreamMessage: "blocked",
 	})
+	require.NoError(t, err)
+	svc.FinalizeCyberPolicyEvent(context.Background(), log)
 
 	calls := repo.snapshot()
 	require.GreaterOrEqual(t, len(calls), 1, "CreateLog must be called")
@@ -200,10 +225,11 @@ func TestRecordCyberPolicyEvent_CreateLogBeforeEmail(t *testing.T) {
 	require.NotEmpty(t, emailSents, "CreateLog must have captured EmailSent value")
 	require.False(t, emailSents[0], "log must be stored with EmailSent=false initially (F7)")
 
-	// With emailService=nil, no email is sent, so UpdateLogEmailSent must NOT
-	// be called (logPersisted && emailSent guard correctly suppresses the patch).
+	// With emailService=nil, no email is sent, so the legacy email-only update
+	// path remains unused; the consolidated outcome update still follows create.
 	require.NotContains(t, calls, "update_email_sent",
 		"UpdateLogEmailSent must not be called when no email was sent")
+	require.Equal(t, []string{"create", "update_outcome"}, calls)
 }
 
 // banCountArgsTestRepo 在 contentModerationTestRepo 基础上记录
@@ -212,6 +238,17 @@ type banCountArgsTestRepo struct {
 	contentModerationTestRepo
 	argsMu     sync.Mutex
 	countCalls []bool
+}
+
+type cyberConfigLoadFailSettingRepo struct {
+	contentModerationTestSettingRepo
+}
+
+func (r *cyberConfigLoadFailSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
+	if key == SettingKeyContentModerationConfig {
+		return "", errors.New("database unavailable")
+	}
+	return r.contentModerationTestSettingRepo.GetValue(ctx, key)
 }
 
 func (r *banCountArgsTestRepo) CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error) {
@@ -258,7 +295,7 @@ func TestRecordCyberPolicyEvent_ExcludeFromBanCount_SkipsBanJudgment(t *testing.
 		repo, nil, nil, nil, nil, nil,
 	)
 
-	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+	log, err := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -266,6 +303,8 @@ func TestRecordCyberPolicyEvent_ExcludeFromBanCount_SkipsBanJudgment(t *testing.
 		UpstreamMessage: "flagged",
 		UpstreamStatus:  400,
 	})
+	require.NoError(t, err)
+	svc.FinalizeCyberPolicyEvent(context.Background(), log)
 
 	require.Empty(t, repo.snapshotCountCalls(), "开关开时不得执行封号计数查询")
 	logs := repo.snapshotLogs()
@@ -285,7 +324,7 @@ func TestRecordCyberPolicyEvent_DefaultCountsTowardBan(t *testing.T) {
 		repo, nil, nil, nil, nil, nil,
 	)
 
-	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+	log, err := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -293,10 +332,40 @@ func TestRecordCyberPolicyEvent_DefaultCountsTowardBan(t *testing.T) {
 		UpstreamMessage: "flagged",
 		UpstreamStatus:  400,
 	})
+	require.NoError(t, err)
+	svc.FinalizeCyberPolicyEvent(context.Background(), log)
 
 	require.Equal(t, []bool{false}, repo.snapshotCountCalls(),
 		"默认配置必须执行计数查询且不排除 cyber 行")
 	logs := repo.snapshotLogs()
 	require.Len(t, logs, 1)
 	require.GreaterOrEqual(t, logs[0].ViolationCount, 1, "默认路径行为不变（现状回归）")
+}
+
+func TestFinalizeCyberPolicyEvent_ConfigLoadFailureSkipsEnforcement(t *testing.T) {
+	repo := &banCountArgsTestRepo{}
+	svc := NewContentModerationService(
+		&cyberConfigLoadFailSettingRepo{contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}}},
+		repo, nil, nil, nil, nil, nil,
+	)
+
+	log, err := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		UserID:          1,
+		UserEmail:       "u@x.com",
+		Model:           "gpt-5",
+		Endpoint:        "/v1/responses",
+		UpstreamMessage: "flagged",
+		UpstreamStatus:  400,
+	})
+	require.NoError(t, err)
+
+	svc.FinalizeCyberPolicyEvent(context.Background(), log)
+
+	require.Empty(t, repo.snapshotCountCalls(), "配置加载失败时不得按默认配置执行封禁计数")
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1, "同步保存的审计记录必须保留")
+	require.Zero(t, logs[0].ViolationCount)
+	require.False(t, logs[0].AutoBanned)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -53,17 +54,22 @@ INSERT INTO content_moderation_logs (
     request_id, user_id, user_email, api_key_id, api_key_name, group_id, group_name,
     endpoint, provider, model, mode, action, flagged, highest_category, highest_score,
     category_scores, threshold_snapshot, input_excerpt, upstream_latency_ms, error,
-    violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword
+    violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword,
+    cyber_request_protocol, cyber_request_snapshot, cyber_request_original_bytes,
+    cyber_request_stored_bytes, cyber_request_truncated
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14, $15,
     $16::jsonb, $17::jsonb, $18, $19, $20,
-    $21, $22, $23, $24, $25
+    $21, $22, $23, $24, $25,
+    $26, $27, $28, $29, $30
 ) RETURNING id, created_at`,
 		log.RequestID, userID, log.UserEmail, apiKeyID, log.APIKeyName, groupID, log.GroupName,
 		log.Endpoint, log.Provider, log.Model, log.Mode, log.Action, log.Flagged, log.HighestCategory, log.HighestScore,
 		string(categoryScores), string(thresholdSnapshot), log.InputExcerpt, latency, log.Error,
 		log.ViolationCount, log.AutoBanned, log.EmailSent, nullableIntPtr(log.QueueDelayMS), log.MatchedKeyword,
+		log.CyberRequestProtocol, log.CyberRequestSnapshot, log.CyberRequestOriginalBytes,
+		log.CyberRequestStoredBytes, log.CyberRequestTruncated,
 	).Scan(&log.ID, &log.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert content moderation log: %w", err)
@@ -97,7 +103,8 @@ SELECT
     l.id, l.request_id, l.user_id, l.user_email, l.api_key_id, l.api_key_name, l.group_id, l.group_name,
     l.endpoint, l.provider, l.model, l.mode, l.action, l.flagged, l.highest_category, l.highest_score,
     l.category_scores, l.threshold_snapshot, l.input_excerpt, l.upstream_latency_ms, l.error,
-    l.violation_count, l.auto_banned, l.email_sent, COALESCE(u.status, ''), l.queue_delay_ms, l.matched_keyword, l.created_at
+    l.violation_count, l.auto_banned, l.email_sent, COALESCE(u.status, ''), l.queue_delay_ms, l.matched_keyword,
+    (l.cyber_request_snapshot <> '') AS cyber_request_available, l.created_at
 FROM content_moderation_logs l
 LEFT JOIN users u ON u.id = l.user_id `+whereSQL+`
 ORDER BY l.created_at DESC, l.id DESC
@@ -142,6 +149,7 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 			&item.UserStatus,
 			&queueDelay,
 			&item.MatchedKeyword,
+			&item.CyberRequestAvailable,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan content moderation log: %w", err)
@@ -178,6 +186,31 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 	return items, paginationResultFromTotal(total, params), nil
 }
 
+func (r *contentModerationRepository) GetCyberPolicyRequestAudit(ctx context.Context, id int64) (*service.CyberPolicyRequestAudit, error) {
+	var item service.CyberPolicyRequestAudit
+	err := r.db.QueryRowContext(ctx, `
+SELECT id, request_id, cyber_request_protocol, cyber_request_snapshot,
+       cyber_request_original_bytes, cyber_request_stored_bytes, cyber_request_truncated
+FROM content_moderation_logs
+WHERE id = $1 AND action = 'cyber_policy' AND cyber_request_snapshot <> ''
+`, id).Scan(
+		&item.LogID,
+		&item.RequestID,
+		&item.Protocol,
+		&item.RequestBody,
+		&item.OriginalBytes,
+		&item.StoredBytes,
+		&item.Truncated,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, service.ErrCyberPolicyRequestAuditNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get cyber policy request audit: %w", err)
+	}
+	return &item, nil
+}
+
 func (r *contentModerationRepository) CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error) {
 	if userID <= 0 {
 		return 0, nil
@@ -209,6 +242,18 @@ func (r *contentModerationRepository) UpdateLogEmailSent(ctx context.Context, id
 	_, err := r.db.ExecContext(ctx, `UPDATE content_moderation_logs SET email_sent = $1 WHERE id = $2`, sent, id)
 	if err != nil {
 		return fmt.Errorf("update content moderation log email_sent: %w", err)
+	}
+	return nil
+}
+
+func (r *contentModerationRepository) UpdateCyberPolicyOutcome(ctx context.Context, id int64, violationCount int, autoBanned bool, emailSent bool) error {
+	_, err := r.db.ExecContext(ctx, `
+UPDATE content_moderation_logs
+SET violation_count = $1, auto_banned = $2, email_sent = $3
+WHERE id = $4 AND action = 'cyber_policy'
+`, violationCount, autoBanned, emailSent, id)
+	if err != nil {
+		return fmt.Errorf("update cyber policy outcome: %w", err)
 	}
 	return nil
 }

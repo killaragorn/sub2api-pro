@@ -378,35 +378,57 @@ type ContentModerationDecision struct {
 }
 
 type ContentModerationLog struct {
-	ID                int64              `json:"id"`
-	RequestID         string             `json:"request_id"`
-	UserID            *int64             `json:"user_id,omitempty"`
-	UserEmail         string             `json:"user_email"`
-	APIKeyID          *int64             `json:"api_key_id,omitempty"`
-	APIKeyName        string             `json:"api_key_name"`
-	GroupID           *int64             `json:"group_id,omitempty"`
-	GroupName         string             `json:"group_name"`
-	Endpoint          string             `json:"endpoint"`
-	Provider          string             `json:"provider"`
-	Model             string             `json:"model"`
-	Mode              string             `json:"mode"`
-	Action            string             `json:"action"`
-	Flagged           bool               `json:"flagged"`
-	HighestCategory   string             `json:"highest_category"`
-	HighestScore      float64            `json:"highest_score"`
-	MatchedKeyword    string             `json:"matched_keyword"`
-	CategoryScores    map[string]float64 `json:"category_scores"`
-	ThresholdSnapshot map[string]float64 `json:"threshold_snapshot"`
-	InputExcerpt      string             `json:"input_excerpt"`
-	UpstreamLatencyMS *int               `json:"upstream_latency_ms,omitempty"`
-	Error             string             `json:"error"`
-	ViolationCount    int                `json:"violation_count"`
-	AutoBanned        bool               `json:"auto_banned"`
-	EmailSent         bool               `json:"email_sent"`
-	UserStatus        string             `json:"user_status"`
-	QueueDelayMS      *int               `json:"queue_delay_ms,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
+	ID                    int64              `json:"id"`
+	RequestID             string             `json:"request_id"`
+	UserID                *int64             `json:"user_id,omitempty"`
+	UserEmail             string             `json:"user_email"`
+	APIKeyID              *int64             `json:"api_key_id,omitempty"`
+	APIKeyName            string             `json:"api_key_name"`
+	GroupID               *int64             `json:"group_id,omitempty"`
+	GroupName             string             `json:"group_name"`
+	Endpoint              string             `json:"endpoint"`
+	Provider              string             `json:"provider"`
+	Model                 string             `json:"model"`
+	Mode                  string             `json:"mode"`
+	Action                string             `json:"action"`
+	Flagged               bool               `json:"flagged"`
+	HighestCategory       string             `json:"highest_category"`
+	HighestScore          float64            `json:"highest_score"`
+	MatchedKeyword        string             `json:"matched_keyword"`
+	CategoryScores        map[string]float64 `json:"category_scores"`
+	ThresholdSnapshot     map[string]float64 `json:"threshold_snapshot"`
+	InputExcerpt          string             `json:"input_excerpt"`
+	UpstreamLatencyMS     *int               `json:"upstream_latency_ms,omitempty"`
+	Error                 string             `json:"error"`
+	ViolationCount        int                `json:"violation_count"`
+	AutoBanned            bool               `json:"auto_banned"`
+	EmailSent             bool               `json:"email_sent"`
+	UserStatus            string             `json:"user_status"`
+	QueueDelayMS          *int               `json:"queue_delay_ms,omitempty"`
+	CyberRequestAvailable bool               `json:"cyber_request_available"`
+	CreatedAt             time.Time          `json:"created_at"`
+
+	CyberRequestProtocol      string `json:"-"`
+	CyberRequestSnapshot      string `json:"-"`
+	CyberRequestOriginalBytes int64  `json:"-"`
+	CyberRequestStoredBytes   int    `json:"-"`
+	CyberRequestTruncated     bool   `json:"-"`
 }
+
+type CyberPolicyRequestAudit struct {
+	LogID         int64  `json:"log_id"`
+	RequestID     string `json:"request_id"`
+	Protocol      string `json:"protocol"`
+	RequestBody   string `json:"request_body"`
+	OriginalBytes int64  `json:"original_bytes"`
+	StoredBytes   int    `json:"stored_bytes"`
+	Truncated     bool   `json:"truncated"`
+}
+
+var ErrCyberPolicyRequestAuditNotFound = infraerrors.NotFound(
+	"CYBER_POLICY_REQUEST_AUDIT_NOT_FOUND",
+	"cyber policy request audit not found",
+)
 
 type ContentModerationLogFilter struct {
 	Pagination pagination.PaginationParams
@@ -473,12 +495,14 @@ type ContentModerationClearHashesResult struct {
 type ContentModerationRepository interface {
 	CreateLog(ctx context.Context, log *ContentModerationLog) error
 	ListLogs(ctx context.Context, filter ContentModerationLogFilter) ([]ContentModerationLog, *pagination.PaginationResult, error)
+	GetCyberPolicyRequestAudit(ctx context.Context, id int64) (*CyberPolicyRequestAudit, error)
 	// CountFlaggedByUserSince 统计窗口内计入封号的违规次数（排除 hash_block；
 	// excludeCyberPolicy 为 true 时额外排除 cyber_policy 行）。
 	CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error)
 	CleanupExpiredLogs(ctx context.Context, hitBefore time.Time, nonHitBefore time.Time) (*ContentModerationCleanupResult, error)
 	// UpdateLogEmailSent 回写邮件发送结果（F7：CreateLog 先行后补 EmailSent）。
 	UpdateLogEmailSent(ctx context.Context, id int64, sent bool) error
+	UpdateCyberPolicyOutcome(ctx context.Context, id int64, violationCount int, autoBanned bool, emailSent bool) error
 }
 
 type ContentModerationHashCache interface {
@@ -1281,6 +1305,16 @@ func (s *ContentModerationService) ListLogs(ctx context.Context, filter ContentM
 	return s.repo.ListLogs(ctx, filter)
 }
 
+func (s *ContentModerationService) GetCyberPolicyRequestAudit(ctx context.Context, id int64) (*CyberPolicyRequestAudit, error) {
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.InternalServer("CONTENT_MODERATION_REPOSITORY_UNAVAILABLE", "内容审计仓储不可用")
+	}
+	if id <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_LOG_ID", "内容审计记录 ID 无效")
+	}
+	return s.repo.GetCyberPolicyRequestAudit(ctx, id)
+}
+
 func (s *ContentModerationService) UnbanUser(ctx context.Context, userID int64) (*ContentModerationUnbanUserResult, error) {
 	if s == nil || s.userRepo == nil {
 		return nil, infraerrors.InternalServer("CONTENT_MODERATION_USER_REPOSITORY_UNAVAILABLE", "用户仓储不可用")
@@ -1807,6 +1841,14 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 }
 
 func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) bool {
+	return s.applyFlaggedAccountSideEffectsWithPersistence(ctx, cfg, log, false)
+}
+
+func (s *ContentModerationService) applyPersistedFlaggedAccountSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) bool {
+	return s.applyFlaggedAccountSideEffectsWithPersistence(ctx, cfg, log, true)
+}
+
+func (s *ContentModerationService) applyFlaggedAccountSideEffectsWithPersistence(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog, alreadyPersisted bool) bool {
 	if s == nil || cfg == nil || log == nil || !log.Flagged || log.UserID == nil || *log.UserID <= 0 {
 		return false
 	}
@@ -1814,7 +1856,10 @@ func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Co
 	if s.repo != nil && cfg.ViolationWindowHours > 0 {
 		since := time.Now().Add(-time.Duration(cfg.ViolationWindowHours) * time.Hour)
 		if n, err := s.repo.CountFlaggedByUserSince(ctx, *log.UserID, since, cfg.CyberPolicyExcludeFromBanCount); err == nil {
-			count = n + 1
+			count = n
+			if !alreadyPersisted {
+				count++
+			}
 		}
 	}
 	log.ViolationCount = count
@@ -2876,22 +2921,16 @@ type CyberPolicyRecordInput struct {
 	UpstreamStatus  int
 	UpstreamInTok   int
 	UpstreamOutTok  int
+	Protocol        string
+	RequestBody     []byte
 }
 
-// RecordCyberPolicyEvent 把一次 cyber_policy 硬阻断写入风控中心日志、计入违规计数、
-// 并给用户发邮件。当前请求已由 gateway 透传给用户；本方法仅做事后记录/通知/计数。
-// 仅受 risk_control_enabled 总开关约束（不受内容审核 Enabled/Mode/scope/sample 约束）。
-func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, in CyberPolicyRecordInput) {
+// RecordCyberPolicyEvent synchronously persists the cyber_policy event and its
+// redacted inbound request snapshot. It intentionally ignores the risk-control
+// switch so audit evidence is not lost when enforcement is disabled.
+func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, in CyberPolicyRecordInput) (*ContentModerationLog, error) {
 	if s == nil || s.repo == nil {
-		return
-	}
-	if !s.isRiskControlEnabled(ctx) {
-		return
-	}
-	cfg, err := s.loadConfig(ctx)
-	if err != nil {
-		slog.Warn("content_moderation.cyber_load_config_failed", "error", err)
-		cfg = &ContentModerationConfig{}
+		return nil, infraerrors.InternalServer("CONTENT_MODERATION_REPOSITORY_UNAVAILABLE", "内容审计仓储不可用")
 	}
 	var userID *int64
 	if in.UserID > 0 {
@@ -2909,56 +2948,76 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	if in.UpstreamInTok > 0 || in.UpstreamOutTok > 0 {
 		errBody = fmt.Sprintf("%s\nupstream_usage=in:%d,out:%d", errBody, in.UpstreamInTok, in.UpstreamOutTok)
 	}
+	snapshot := buildCyberPolicyRequestSnapshot(in.RequestBody)
 	log := &ContentModerationLog{
-		RequestID:       in.RequestID,
-		UserID:          userID,
-		UserEmail:       in.UserEmail,
-		APIKeyID:        apiKeyID,
-		APIKeyName:      in.APIKeyName,
-		GroupID:         cloneInt64Ptr(in.GroupID),
-		GroupName:       in.GroupName,
-		Endpoint:        in.Endpoint,
-		Provider:        "openai",
-		Model:           in.Model,
-		Mode:            "post_upstream",
-		Action:          ContentModerationActionCyberPolicy,
-		Flagged:         true,
-		HighestCategory: "cyber_policy",
-		HighestScore:    1.0,
-		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
-		CreatedAt:       time.Now(),
-	}
-	// 开关开时 cyber_policy 不参与封号计数：当次不判定（此处跳过），
-	// 历史行由 CountFlaggedByUserSince 的 excludeCyberPolicy 排除。
-	autoBanned := false
-	if !cfg.CyberPolicyExcludeFromBanCount {
-		autoBanned = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		RequestID:                 in.RequestID,
+		UserID:                    userID,
+		UserEmail:                 in.UserEmail,
+		APIKeyID:                  apiKeyID,
+		APIKeyName:                in.APIKeyName,
+		GroupID:                   cloneInt64Ptr(in.GroupID),
+		GroupName:                 in.GroupName,
+		Endpoint:                  in.Endpoint,
+		Provider:                  "openai",
+		Model:                     in.Model,
+		Mode:                      "post_upstream",
+		Action:                    ContentModerationActionCyberPolicy,
+		Flagged:                   true,
+		HighestCategory:           "cyber_policy",
+		HighestScore:              1.0,
+		Error:                     trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
+		CyberRequestAvailable:     snapshot.Body != "",
+		CyberRequestProtocol:      strings.TrimSpace(in.Protocol),
+		CyberRequestSnapshot:      snapshot.Body,
+		CyberRequestOriginalBytes: snapshot.OriginalBytes,
+		CyberRequestStoredBytes:   snapshot.StoredBytes,
+		CyberRequestTruncated:     snapshot.Truncated,
+		CreatedAt:                 time.Now(),
 	}
 	log.EmailSent = false
-	logPersisted := true
 	if err := s.repo.CreateLog(ctx, log); err != nil {
-		logPersisted = false
-		slog.Warn("content_moderation.cyber_create_log_failed", "user_id", in.UserID, "error", err)
+		return nil, fmt.Errorf("create cyber policy audit log: %w", err)
 	}
+	return log, nil
+}
+
+// FinalizeCyberPolicyEvent performs enforcement and notification side effects
+// after the audit row has been durably created. The caller runs this method
+// asynchronously so SMTP and account mutation never delay the client response.
+func (s *ContentModerationService) FinalizeCyberPolicyEvent(ctx context.Context, log *ContentModerationLog) {
+	if s == nil || s.repo == nil || log == nil || log.ID <= 0 || !s.isRiskControlEnabled(ctx) {
+		return
+	}
+	cfg, err := s.loadConfig(ctx)
+	configAvailable := err == nil
+	if err != nil {
+		slog.Warn("content_moderation.cyber_load_config_failed", "log_id", log.ID, "error", err)
+		cfg = &ContentModerationConfig{}
+	}
+
+	autoBanJustApplied := false
+	if configAvailable && !cfg.CyberPolicyExcludeFromBanCount {
+		autoBanJustApplied = s.applyPersistedFlaggedAccountSideEffects(ctx, cfg, log)
+	}
+
 	emailSent := false
 	if s.emailService != nil && strings.TrimSpace(log.UserEmail) != "" {
 		if err := s.sendCyberPolicyEmail(ctx, log); err != nil {
-			slog.Warn("content_moderation.cyber_email_failed", "user_id", in.UserID, "error", err)
+			slog.Warn("content_moderation.cyber_email_failed", "user_id", contentModerationEmailUserID(log), "error", err)
 		} else {
 			emailSent = true
 		}
-		if autoBanned {
+		if autoBanJustApplied {
 			if err := s.sendAccountDisabledEmail(ctx, cfg, log); err != nil {
-				slog.Warn("content_moderation.cyber_ban_email_failed", "user_id", in.UserID, "error", err)
+				slog.Warn("content_moderation.cyber_ban_email_failed", "user_id", contentModerationEmailUserID(log), "error", err)
 			} else {
 				emailSent = true
 			}
 		}
 	}
-	if logPersisted && emailSent {
-		if err := s.repo.UpdateLogEmailSent(ctx, log.ID, true); err != nil {
-			slog.Warn("content_moderation.cyber_update_email_sent_failed", "log_id", log.ID, "error", err)
-		}
+	log.EmailSent = emailSent
+	if err := s.repo.UpdateCyberPolicyOutcome(ctx, log.ID, log.ViolationCount, log.AutoBanned, log.EmailSent); err != nil {
+		slog.Warn("content_moderation.cyber_update_outcome_failed", "log_id", log.ID, "error", err)
 	}
 }
 

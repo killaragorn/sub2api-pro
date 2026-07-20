@@ -193,7 +193,18 @@ export interface ContentModerationLog {
   email_sent: boolean
   user_status: string
   queue_delay_ms: number | null
+  cyber_request_available: boolean
   created_at: string
+}
+
+export interface CyberPolicyRequestAudit {
+  log_id: number
+  request_id: string
+  protocol: string
+  request_body: string
+  original_bytes: number
+  stored_bytes: number
+  truncated: boolean
 }
 
 export interface ListContentModerationLogsParams {
@@ -262,6 +273,13 @@ export async function listLogs(
   return data
 }
 
+export async function getCyberPolicyRequestAudit(logID: number): Promise<CyberPolicyRequestAudit> {
+  const { data } = await apiClient.get<CyberPolicyRequestAudit>(
+    `/admin/risk-control/logs/${logID}/cyber-request`
+  )
+  return data
+}
+
 export async function unbanUser(userID: number): Promise<ContentModerationUnbanUserResponse> {
   const { data } = await apiClient.post<ContentModerationUnbanUserResponse>(
     `/admin/risk-control/users/${userID}/unban`
@@ -287,6 +305,7 @@ export const riskControlAPI = {
   getStatus,
   testAPIKeys,
   listLogs,
+  getCyberPolicyRequestAudit,
   unbanUser,
   deleteFlaggedHash,
   clearFlaggedHashes,
