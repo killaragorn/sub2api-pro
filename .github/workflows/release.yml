@@ -28,7 +28,6 @@ permissions:
 jobs:
   # Update VERSION file with tag version
   update-version:
-    if: ${{ github.repository == 'Wei-Shaw/sub2api' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -53,7 +52,6 @@ jobs:
           retention-days: 1
 
   build-frontend:
-    if: ${{ github.repository == 'Wei-Shaw/sub2api' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -87,7 +85,6 @@ jobs:
           retention-days: 1
 
   release:
-    if: ${{ github.repository == 'Wei-Shaw/sub2api' }}
     needs: [update-version, build-frontend]
     runs-on: ubuntu-latest
     steps:
@@ -277,6 +274,7 @@ jobs:
 
   sync-version-file:
     needs: [release]
+    # product/main is protected in the fork; only upstream may write VERSION back.
     if: ${{ github.repository == 'Wei-Shaw/sub2api' && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
