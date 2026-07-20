@@ -99,7 +99,7 @@ func TestRecordCyberPolicyEvent_AlwaysPersistsWhenRiskControlOff(t *testing.T) {
 		UpstreamBody:    `{"error":{"code":"cyber_policy"}}`,
 		UpstreamStatus:  400,
 		Protocol:        ContentModerationProtocolOpenAIResponses,
-		RequestBody:     []byte(`{"model":"gpt-5","input":"audit me"}`),
+		RequestBody:     []byte(`{"model":"gpt-5","instructions":"system audit","input":[{"role":"user","content":"audit me"},{"type":"function_call_output","output":"private tool output"}]}`),
 	})
 
 	require.NoError(t, err)
@@ -109,6 +109,9 @@ func TestRecordCyberPolicyEvent_AlwaysPersistsWhenRiskControlOff(t *testing.T) {
 	require.Len(t, logs, 1, "cyber audit must be persisted even when risk_control_enabled is off")
 	require.True(t, logs[0].CyberRequestAvailable)
 	require.Contains(t, logs[0].CyberRequestSnapshot, "audit me")
+	require.Contains(t, logs[0].CyberRequestSnapshot, "system audit")
+	require.NotContains(t, logs[0].CyberRequestSnapshot, "private tool output")
+	require.NotContains(t, logs[0].CyberRequestSnapshot, `"model"`)
 	require.Zero(t, logs[0].ViolationCount, "disabled risk control must skip enforcement side effects")
 }
 

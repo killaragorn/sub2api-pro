@@ -2926,8 +2926,8 @@ type CyberPolicyRecordInput struct {
 }
 
 // RecordCyberPolicyEvent synchronously persists the cyber_policy event and its
-// redacted inbound request snapshot. It intentionally ignores the risk-control
-// switch so audit evidence is not lost when enforcement is disabled.
+// redacted system-prompt/user-input projection. It intentionally ignores the
+// risk-control switch so audit evidence is not lost when enforcement is disabled.
 func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, in CyberPolicyRecordInput) (*ContentModerationLog, error) {
 	if s == nil || s.repo == nil {
 		return nil, infraerrors.InternalServer("CONTENT_MODERATION_REPOSITORY_UNAVAILABLE", "内容审计仓储不可用")
@@ -2948,7 +2948,7 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	if in.UpstreamInTok > 0 || in.UpstreamOutTok > 0 {
 		errBody = fmt.Sprintf("%s\nupstream_usage=in:%d,out:%d", errBody, in.UpstreamInTok, in.UpstreamOutTok)
 	}
-	snapshot := buildCyberPolicyRequestSnapshot(in.RequestBody)
+	snapshot := buildCyberPolicyRequestSnapshot(in.Protocol, in.RequestBody)
 	log := &ContentModerationLog{
 		RequestID:                 in.RequestID,
 		UserID:                    userID,

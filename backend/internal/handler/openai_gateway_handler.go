@@ -2778,10 +2778,10 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 	enqueueOpsErrorLog(h.opsService, buildCyberSessionBlockedOpsEntry(meta))
 }
 
-// recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，同步保存风控日志和
-// 脱敏后的原始请求快照，再异步处理邮件、封禁、用量及运维日志。标记由 gateway 服务层在
-// 透传 cyber 后设置；forwardErrored 为 true 时才写用量行，避免与正常 RecordUsage
-// (forward 成功路径)重复。每请求至多记录一次。
+// recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，同步保存仅含 system prompt
+// 和 user 输入的脱敏投影，再异步处理邮件、封禁、用量及运维日志。标记由 gateway 服务层在透传
+// cyber 后设置；forwardErrored 为 true 时才写用量行，避免与正常 RecordUsage（forward 成功路径）
+// 重复。每请求至多记录一次。
 func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, protocol string, requestBody []byte, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
