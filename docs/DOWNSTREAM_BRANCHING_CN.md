@@ -207,6 +207,11 @@ v0.1.162-pro.1
 
 当上游版本发生变化时，二开修订号重新从 `pro.1` 开始。
 
+`-pro.N` 表示二开正式生产修订号，不是 alpha、beta 或 RC。虽然 SemVer 会把连字符后的
+`pro.N` 解析为预发布标识，但 GitHub Release 必须发布为正式版本并可成为 Latest。
+因此 `.goreleaser.yaml` 和 `.goreleaser.simple.yaml` 必须设置
+`release.prerelease: false`，不能使用 `auto`。
+
 ```bash
 git switch product/main
 git pull --ff-only origin product/main
