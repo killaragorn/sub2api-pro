@@ -110,8 +110,11 @@ func TestRecordCyberPolicyEvent_AlwaysPersistsWhenRiskControlOff(t *testing.T) {
 	require.True(t, logs[0].CyberRequestAvailable)
 	require.Contains(t, logs[0].CyberRequestSnapshot, "audit me")
 	require.Contains(t, logs[0].CyberRequestSnapshot, "system audit")
-	require.NotContains(t, logs[0].CyberRequestSnapshot, "private tool output")
-	require.NotContains(t, logs[0].CyberRequestSnapshot, `"model"`)
+	require.Contains(t, logs[0].CyberRequestSnapshot, "private tool output")
+	require.Contains(t, logs[0].CyberRequestSnapshot, `"model":"gpt-5"`)
+	require.Equal(t, int64(len(logs[0].CyberRequestSnapshot)), logs[0].CyberRequestOriginalBytes)
+	require.Equal(t, len(logs[0].CyberRequestSnapshot), logs[0].CyberRequestStoredBytes)
+	require.False(t, logs[0].CyberRequestTruncated)
 	require.Zero(t, logs[0].ViolationCount, "disabled risk control must skip enforcement side effects")
 }
 

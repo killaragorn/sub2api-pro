@@ -51,14 +51,15 @@ func (r *cyberRequestAuditHandlerRepo) UpdateCyberPolicyOutcome(context.Context,
 
 func TestContentModerationHandlerGetCyberPolicyRequestAudit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	const requestBody = `{"model":"gpt-5","input":[{"role":"user","content":"audit"},{"type":"function_call_output","output":"complete tool output"}]}`
 	repo := &cyberRequestAuditHandlerRepo{audit: &service.CyberPolicyRequestAudit{
 		LogID:         77,
 		RequestID:     "req-77",
 		Protocol:      service.ContentModerationProtocolOpenAIResponses,
-		RequestBody:   `{"input":"audit"}`,
-		OriginalBytes: 128,
-		StoredBytes:   17,
-		Truncated:     true,
+		RequestBody:   requestBody,
+		OriginalBytes: int64(len(requestBody)),
+		StoredBytes:   len(requestBody),
+		Truncated:     false,
 	}}
 	handler := NewContentModerationHandler(service.NewContentModerationService(nil, repo, nil, nil, nil, nil, nil))
 	router := gin.New()

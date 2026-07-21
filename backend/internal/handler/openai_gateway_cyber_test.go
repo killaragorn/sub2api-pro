@@ -75,7 +75,7 @@ func TestRecordCyberPolicyIfMarked_PersistsRequestBeforeReturning(t *testing.T) 
 	}}
 	moderation := service.NewContentModerationService(settings, repo, nil, nil, nil, nil, nil)
 	h := &OpenAIGatewayHandler{contentModerationService: moderation}
-	body := []byte(`{"model":"gpt-5","input":"request retained for audit"}`)
+	body := []byte(`{"model":"gpt-5","input":[{"role":"user","content":"request retained for audit"},{"type":"function_call_output","output":"complete tool output"}],"temperature":1.2300}`)
 
 	h.recordCyberPolicyIfMarked(
 		c, nil, nil, nil, "gpt-5",
@@ -87,7 +87,7 @@ func TestRecordCyberPolicyIfMarked_PersistsRequestBeforeReturning(t *testing.T) 
 	require.Len(t, logs, 1, "audit persistence must finish before the handler helper returns")
 	require.Equal(t, "req-sync-audit", logs[0].RequestID)
 	require.Equal(t, service.ContentModerationProtocolOpenAIResponses, logs[0].CyberRequestProtocol)
-	require.Contains(t, logs[0].CyberRequestSnapshot, "request retained for audit")
+	require.Equal(t, string(body), logs[0].CyberRequestSnapshot)
 }
 
 // TestRecordCyberPolicyIfMarked_ForwardSuccessSkipsUsageLog verifies the semantic:

@@ -457,14 +457,15 @@ describe('admin RiskControlView', () => {
       page_size: 20,
       pages: 1,
     })
+    const completeCyberRequest = '{"model":"gpt-5","input":[{"role":"user","content":"audit request"},{"type":"function_call_output","output":"complete tool output"}],"temperature":1.23}'
     getCyberPolicyRequestAudit.mockResolvedValue({
       log_id: 77,
       request_id: 'req-cyber-77',
       protocol: 'openai_responses',
-      request_body: '{"input":"redacted audit request"}',
-      original_bytes: 70000,
-      stored_bytes: 65536,
-      truncated: true,
+      request_body: completeCyberRequest,
+      original_bytes: completeCyberRequest.length,
+      stored_bytes: completeCyberRequest.length,
+      truncated: false,
     })
 
     const wrapper = mount(RiskControlView, {
@@ -488,8 +489,9 @@ describe('admin RiskControlView', () => {
     await flushPromises()
 
     expect(getCyberPolicyRequestAudit).toHaveBeenCalledWith(77)
-    expect(wrapper.get('[data-test="cyber-audit-body"]').text()).toContain('redacted audit request')
-    expect(wrapper.get('[data-test="cyber-audit-truncated"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="cyber-audit-body"]').text()).toContain('complete tool output')
+    expect(wrapper.get('[data-test="cyber-audit-body"]').text()).toContain('"model": "gpt-5"')
+    expect(wrapper.find('[data-test="cyber-audit-truncated"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('cyber_policy: blocked')
   })
 })
