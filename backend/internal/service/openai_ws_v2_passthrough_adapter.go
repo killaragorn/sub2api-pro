@@ -581,10 +581,21 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if msgType == coderws.MessageText {
 		if normalized, changed := normalizeCompletedImageGenerationStatus(payload); changed {
 			payload = normalized
 		}
+	}
+	// coder/websocket closes the transport when a write context is canceled.
+	// Once a downstream write starts, let it finish within its existing
+	// deadline so a control cancellation can still deliver a close frame.
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		defer cancel()
 	}
 	return c.conn.Write(ctx, msgType, payload)
 }
