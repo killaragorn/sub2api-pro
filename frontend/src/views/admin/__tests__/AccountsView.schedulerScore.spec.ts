@@ -193,6 +193,58 @@ describe('admin AccountsView scheduler score column', () => {
     getAllGroups.mockResolvedValue([])
   })
 
+  it('requests accounts in priority order by default', async () => {
+    mountView()
+    await flushPromises()
+
+    expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      sort_by: 'priority',
+      sort_order: 'asc'
+    }))
+  })
+
+  it('migrates the old name default while preserving explicit non-name sorts', async () => {
+    localStorage.setItem('account-table-sort', JSON.stringify({ key: 'name', order: 'asc' }))
+    const migratedView = mountView()
+    await flushPromises()
+
+    expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      sort_by: 'priority',
+      sort_order: 'asc'
+    }))
+    expect(JSON.parse(localStorage.getItem('account-table-sort') || '{}')).toEqual({
+      key: 'priority',
+      order: 'asc'
+    })
+    migratedView.unmount()
+
+    localStorage.clear()
+    listAccounts.mockClear()
+    localStorage.setItem('account-table-sort', JSON.stringify({ key: 'created_at', order: 'desc' }))
+    mountView()
+    await flushPromises()
+    expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      sort_by: 'created_at',
+      sort_order: 'desc'
+    }))
+  })
+
+  it('preserves an explicit descending name sort during the default migration', async () => {
+    localStorage.setItem('account-table-sort', JSON.stringify({ key: 'name', order: 'desc' }))
+
+    mountView()
+    await flushPromises()
+
+    expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      sort_by: 'name',
+      sort_order: 'desc'
+    }))
+    expect(JSON.parse(localStorage.getItem('account-table-sort') || '{}')).toEqual({
+      key: 'name',
+      order: 'desc'
+    })
+  })
+
   it('falls back to the base score for ungrouped accounts instead of showing a dash', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -232,7 +284,7 @@ describe('admin AccountsView scheduler score column', () => {
 
   it('requests scheduler scores when the migrated column settings explicitly show the column', async () => {
     localStorage.setItem('account-hidden-columns', JSON.stringify(['today_stats']))
-    localStorage.setItem('account-hidden-columns-version', 'scheduler-score-hidden-by-default')
+    localStorage.setItem('account-hidden-columns-version', 'priority-visible-scheduler-score-hidden')
 
     mountView()
     await flushPromises()

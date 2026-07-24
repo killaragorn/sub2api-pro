@@ -226,6 +226,7 @@ type SystemSettings struct {
 	OpenAILowUpstreamRatePriorityEnabled                   bool
 	OpenAIOAuthSchedulingRateMultiplier                    float64
 	OpenAIAdvancedSchedulerEnabled                         bool
+	OpenAIPrioritySaturationEnabled                        bool
 	OpenAIAdvancedSchedulerStickyWeightedEnabled           bool
 	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled     bool
 	OpenAIAdvancedSchedulerLBTopK                          string

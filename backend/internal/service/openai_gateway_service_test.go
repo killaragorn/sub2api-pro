@@ -363,11 +363,236 @@ func TestOpenAIGatewayService_BindHTTPResponseAccount(t *testing.T) {
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 37001, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	svc.bindHTTPResponseAccount(context.Background(), c, account, "resp_http_001")
+	require.True(t, svc.bindHTTPResponseAccount(context.Background(), c, account, "resp_http_001"))
 
 	got, err := svc.getOpenAIWSStateStore().GetResponseAccount(context.Background(), groupID, "resp_http_001")
 	require.NoError(t, err)
 	require.Equal(t, account.ID, got)
+}
+
+func TestOpenAIGatewayService_RejectAcquiredOpenAISelection(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(4202)
+
+	t.Run("releases slot and removes matching owner before reclaim", func(t *testing.T) {
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+
+		releaseCount := 0
+		selection := &AccountSelectionResult{
+			Account:     &Account{ID: 37011},
+			Acquired:    true,
+			ReleaseFunc: func() { releaseCount++ },
+		}
+		selection, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: "grok-media-session",
+		}, selection)
+		require.NoError(t, err)
+		require.True(t, selection.stickyBindingClaimed)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, "grok-media-session", selection))
+		require.Equal(t, 1, releaseCount)
+		require.False(t, selection.Acquired)
+		require.Nil(t, selection.ReleaseFunc)
+
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-session", 37012)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.Equal(t, int64(37012), ownerID)
+	})
+
+	t.Run("keeps a matching owner that predates the acquired selection", func(t *testing.T) {
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-existing", 37015)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.Equal(t, int64(37015), ownerID)
+
+		releaseCount := 0
+		selection := &AccountSelectionResult{
+			Account:     &Account{ID: 37015},
+			Acquired:    true,
+			ReleaseFunc: func() { releaseCount++ },
+		}
+		selection, err = svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:         &groupID,
+			SessionHash:     "grok-media-existing",
+			StickyAccountID: 37015,
+		}, selection)
+		require.NoError(t, err)
+		require.False(t, selection.stickyBindingClaimed)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, "grok-media-existing", selection))
+		require.Equal(t, 1, releaseCount)
+
+		ownerID, claimed, err = svc.ClaimStickySession(ctx, &groupID, "grok-media-existing", 37016)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37015), ownerID)
+	})
+
+	t.Run("keeps a matching owner for an unacquired wait plan", func(t *testing.T) {
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-wait", 37017)
+		require.NoError(t, err)
+
+		selection := &AccountSelectionResult{
+			Account: &Account{ID: 37017},
+			WaitPlan: &AccountWaitPlan{
+				AccountID:      37017,
+				MaxConcurrency: 2,
+			},
+		}
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, "grok-media-wait", selection))
+
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-wait", 37018)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37017), ownerID)
+	})
+
+	t.Run("does not delete a different canonical owner", func(t *testing.T) {
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-overflow", 37021)
+		require.NoError(t, err)
+
+		releaseCount := 0
+		selection := &AccountSelectionResult{
+			Account:              &Account{ID: 37022},
+			Acquired:             true,
+			ReleaseFunc:          func() { releaseCount++ },
+			stickyBindingClaimed: true,
+		}
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, "grok-media-overflow", selection))
+		require.Equal(t, 1, releaseCount)
+
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-overflow", 37023)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37021), ownerID)
+	})
+
+	t.Run("restores the previous owner after rejecting a migrated selection", func(t *testing.T) {
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-migrated", 37031)
+		require.NoError(t, err)
+		swapped, err := svc.MigrateStickySession(ctx, &groupID, "grok-media-migrated", 37031, 37032)
+		require.NoError(t, err)
+		require.True(t, swapped)
+
+		selection := &AccountSelectionResult{
+			Account:                      &Account{ID: 37032},
+			Acquired:                     true,
+			ReleaseFunc:                  func() {},
+			stickyBindingPreviousOwnerID: 37031,
+		}
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, "grok-media-migrated", selection))
+
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-migrated", 37033)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37031), ownerID)
+	})
+}
+
+func TestOpenAIGatewayService_FinalizeOpenAIResponseAffinity(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(4203)
+	const (
+		sessionHash = "responses-overflow-session"
+		responseID  = "resp_overflow_001"
+		oldOwnerID  = int64(37031)
+		newOwnerID  = int64(37032)
+	)
+
+	newService := func(t *testing.T) (*OpenAIGatewayService, *stubGatewayCache, *AccountSelectionResult) {
+		t.Helper()
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, sessionHash, oldOwnerID)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.Equal(t, oldOwnerID, ownerID)
+		require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, responseID, newOwnerID, time.Hour))
+		return svc, cache, &AccountSelectionResult{
+			Account:               &Account{ID: newOwnerID, Platform: PlatformOpenAI},
+			SessionOwnerID:        oldOwnerID,
+			PreserveStickyBinding: true,
+		}
+	}
+
+	t.Run("moves owner after response mapping is persisted", func(t *testing.T) {
+		svc, _, selection := newService(t)
+		swapped, err := svc.FinalizeOpenAIResponseAffinity(ctx, &groupID, sessionHash, selection, &OpenAIForwardResult{
+			ResponseID:           responseID,
+			ResponseAccountBound: true,
+		})
+		require.NoError(t, err)
+		require.True(t, swapped)
+		require.Equal(t, newOwnerID, selection.SessionOwnerID)
+		require.False(t, selection.PreserveStickyBinding)
+
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, sessionHash, 37033)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, newOwnerID, ownerID)
+	})
+
+	t.Run("keeps owner when persistence was not confirmed", func(t *testing.T) {
+		svc, _, selection := newService(t)
+		swapped, err := svc.FinalizeOpenAIResponseAffinity(ctx, &groupID, sessionHash, selection, &OpenAIForwardResult{
+			ResponseID: responseID,
+		})
+		require.NoError(t, err)
+		require.False(t, swapped)
+
+		ownerID, _, err := svc.ClaimStickySession(ctx, &groupID, sessionHash, 37033)
+		require.NoError(t, err)
+		require.Equal(t, oldOwnerID, ownerID)
+	})
+
+	t.Run("does not overwrite a concurrently changed owner", func(t *testing.T) {
+		svc, cache, selection := newService(t)
+		concurrentOwnerID := int64(37034)
+		cache.sessionBindings[svc.openAISessionCacheKey(sessionHash)] = concurrentOwnerID
+
+		swapped, err := svc.FinalizeOpenAIResponseAffinity(ctx, &groupID, sessionHash, selection, &OpenAIForwardResult{
+			RequestID:             responseID,
+			ResponseAccountBound:  true,
+			OpenAIWSMode:          true,
+			UpstreamTerminalEvent: "response.completed",
+		})
+		require.NoError(t, err)
+		require.False(t, swapped)
+
+		ownerID, _, err := svc.ClaimStickySession(ctx, &groupID, sessionHash, 37033)
+		require.NoError(t, err)
+		require.Equal(t, concurrentOwnerID, ownerID)
+	})
+
+	t.Run("ignores non-response identifiers and failed responses", func(t *testing.T) {
+		svc, _, selection := newService(t)
+		swapped, err := svc.FinalizeOpenAIResponseAffinity(ctx, &groupID, sessionHash, selection, &OpenAIForwardResult{
+			RequestID:            "req_123",
+			ResponseAccountBound: true,
+		})
+		require.NoError(t, err)
+		require.False(t, swapped)
+
+		swapped, err = svc.FinalizeOpenAIResponseAffinity(ctx, &groupID, sessionHash, selection, &OpenAIForwardResult{
+			RequestID:             responseID,
+			ResponseAccountBound:  true,
+			OpenAIWSMode:          true,
+			UpstreamTerminalEvent: "response.failed",
+		})
+		require.NoError(t, err)
+		require.False(t, swapped)
+	})
 }
 
 func TestOpenAIGatewayService_GenerateExplicitSessionHash_SkipsContentFallback(t *testing.T) {
@@ -489,6 +714,28 @@ func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accoun
 type stubGatewayCache struct {
 	sessionBindings map[string]int64
 	deletedSessions map[string]int
+}
+
+type claimRaceGatewayCache struct {
+	stubGatewayCache
+	racingKey string
+	ownerID   int64
+	reads     int
+}
+
+func (c *claimRaceGatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
+	if sessionHash != c.racingKey {
+		return c.stubGatewayCache.GetSessionAccountID(ctx, groupID, sessionHash)
+	}
+	c.reads++
+	if c.reads == 1 {
+		return 0, errors.New("not found")
+	}
+	if c.sessionBindings == nil {
+		c.sessionBindings = make(map[string]int64)
+	}
+	c.sessionBindings[sessionHash] = c.ownerID
+	return c.ownerID, nil
 }
 
 func (c *stubGatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -933,6 +1180,31 @@ func TestOpenAISelectAccountForModelWithExclusions_SetsStickyBinding(t *testing.
 	}
 }
 
+func TestOpenAISelectAccountForModelWithExclusions_FollowsCanonicalOwnerAfterClaimRace(t *testing.T) {
+	sessionHash := "claim-race"
+	cacheKey := "openai:" + sessionHash
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 2},
+		},
+	}
+	cache := &claimRaceGatewayCache{
+		racingKey: cacheKey,
+		ownerID:   2,
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		cache:       cache,
+	}
+
+	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, sessionHash, "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	require.Equal(t, int64(2), account.ID)
+	require.Equal(t, int64(2), cache.sessionBindings[cacheKey])
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_StickyWaitPlan(t *testing.T) {
 	sessionHash := "sticky-wait"
 	groupID := int64(1)
@@ -1025,6 +1297,9 @@ func TestOpenAISelectAccountForModelWithExclusions_StickyExcludedFallback(t *tes
 	}
 	if acc == nil || acc.ID != 2 {
 		t.Fatalf("expected account 2")
+	}
+	if cache.sessionBindings["openai:"+sessionHash] != 1 {
+		t.Fatalf("expected excluded owner binding to remain on account 1")
 	}
 }
 

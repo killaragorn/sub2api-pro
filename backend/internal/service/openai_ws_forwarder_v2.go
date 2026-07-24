@@ -716,9 +716,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		flushStreamWriter(true)
 	}
 
+	responseAccountBound := false
 	if responseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
-		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
+		bindErr := stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, bindErr)
+		responseAccountBound = bindErr == nil
 		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
 	}
 	if stateStore != nil && storeDisabled && sessionHash != "" {
@@ -749,6 +752,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	return &OpenAIForwardResult{
 		RequestID:             responseID,
+		ResponseAccountBound:  responseAccountBound,
 		Usage:                 *usage,
 		Model:                 originalModel,
 		UpstreamModel:         mappedModel,

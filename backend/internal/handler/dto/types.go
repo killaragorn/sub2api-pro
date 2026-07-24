@@ -223,6 +223,10 @@ type Account struct {
 	WindowCostLimit         *float64 `json:"window_cost_limit,omitempty"`
 	WindowCostStickyReserve *float64 `json:"window_cost_sticky_reserve,omitempty"`
 
+	// OpenAI 会话亲和并发保护（C 使用 Concurrency 字段）。
+	AffinityConcurrencyReserve *int `json:"affinity_concurrency_reserve,omitempty"`
+	GeneralConcurrencyLimit    *int `json:"general_concurrency_limit,omitempty"`
+
 	// 会话数量控制（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 从 extra 字段提取，方便前端显示和编辑
 	MaxSessions           *int `json:"max_sessions,omitempty"`

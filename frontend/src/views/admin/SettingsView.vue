@@ -4273,6 +4273,86 @@
             </div>
           </div>
 
+          <!-- OpenAI Priority Saturation Scheduler -->
+          <div class="card" data-testid="openai-priority-saturation-settings">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.openaiPrioritySaturation.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.openaiPrioritySaturation.description") }}
+              </p>
+            </div>
+            <div class="space-y-3 p-6">
+              <div class="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+                <div class="min-w-0">
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openaiPrioritySaturation.enable") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.openaiPrioritySaturation.enableHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  class="self-end sm:self-auto"
+                  :model-value="form.openai_priority_saturation_enabled"
+                  data-testid="openai-priority-saturation-toggle"
+                  @update:model-value="handlePrioritySaturationToggle"
+                />
+              </div>
+              <div
+                v-if="form.openai_priority_saturation_enabled"
+                class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <dl class="grid grid-cols-1 gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt class="font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openaiPrioritySaturation.orderLabel") }}
+                    </dt>
+                    <dd class="mt-0.5 text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.openaiPrioritySaturation.orderValue") }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openaiPrioritySaturation.generalLabel") }}
+                    </dt>
+                    <dd class="mt-0.5 text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.openaiPrioritySaturation.generalValue") }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openaiPrioritySaturation.affinityLabel") }}
+                    </dt>
+                    <dd class="mt-0.5 text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.openaiPrioritySaturation.affinityValue") }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openaiPrioritySaturation.reserveLabel") }}
+                    </dt>
+                    <dd class="mt-0.5 text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.openaiPrioritySaturation.reserveValue") }}
+                    </dd>
+                  </div>
+                </dl>
+                <p class="border-l-2 border-amber-400 pl-3 text-xs text-amber-700 dark:text-amber-300">
+                  {{ t("admin.settings.openaiPrioritySaturation.capacityWarning") }}
+                </p>
+                <router-link
+                  class="inline-flex text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+                  to="/admin/accounts"
+                >
+                  {{ t("admin.settings.openaiPrioritySaturation.manageAccounts") }}
+                </router-link>
+              </div>
+            </div>
+          </div>
+
           <!-- Gateway Scheduling Settings -->
           <div class="card">
             <div
@@ -4301,7 +4381,7 @@
               </div>
 
               <div
-                v-if="!form.openai_advanced_scheduler_enabled"
+                v-if="!form.openai_advanced_scheduler_enabled && !form.openai_priority_saturation_enabled"
                 class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
               >
                 <div>
@@ -4323,7 +4403,7 @@
               </div>
 
               <div
-                v-if="!form.openai_advanced_scheduler_enabled && form.openai_low_upstream_rate_priority_enabled"
+                v-if="!form.openai_advanced_scheduler_enabled && !form.openai_priority_saturation_enabled && form.openai_low_upstream_rate_priority_enabled"
                 class="flex flex-col items-stretch gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:items-start sm:justify-between sm:gap-6 dark:border-dark-700"
               >
                 <div class="min-w-0">
@@ -4368,8 +4448,9 @@
                   </p>
                 </div>
                 <Toggle
-                  v-model="form.openai_advanced_scheduler_enabled"
+                  :model-value="form.openai_advanced_scheduler_enabled"
                   data-testid="openai-advanced-scheduler-toggle"
+                  @update:model-value="handleAdvancedSchedulerToggle"
                 />
               </div>
 
@@ -7726,6 +7807,15 @@
         @save="handleSaveProvider"
       />
       <ConfirmDialog
+        :show="schedulerModeConfirmation.show"
+        :title="schedulerModeConfirmationTitle"
+        :message="schedulerModeConfirmationMessage"
+        :confirm-text="t('admin.settings.openaiPrioritySaturation.switchConfirm')"
+        data-testid="openai-scheduler-switch-confirm"
+        @confirm="confirmOpenAISchedulerModeSwitch"
+        @cancel="cancelOpenAISchedulerModeSwitch"
+      />
+      <ConfirmDialog
         :show="showDeleteProviderDialog"
         :title="t('admin.settings.payment.deleteProvider')"
         :message="t('admin.settings.payment.deleteProviderConfirm')"
@@ -8471,6 +8561,7 @@ type SettingsForm = Omit<
   openai_low_upstream_rate_priority_enabled: boolean;
   openai_oauth_scheduling_rate_multiplier: number;
   openai_advanced_scheduler_enabled: boolean;
+  openai_priority_saturation_enabled: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled: boolean;
   openai_advanced_scheduler_subscription_priority_enabled: boolean;
   openai_advanced_scheduler_lb_top_k: string;
@@ -8684,6 +8775,7 @@ const form = reactive<SettingsForm>({
   openai_low_upstream_rate_priority_enabled: false,
   openai_oauth_scheduling_rate_multiplier: 1,
   openai_advanced_scheduler_enabled: false,
+  openai_priority_saturation_enabled: false,
   openai_advanced_scheduler_sticky_weighted_enabled: false,
   openai_advanced_scheduler_subscription_priority_enabled: false,
   openai_advanced_scheduler_lb_top_k: "",
@@ -8733,6 +8825,71 @@ const form = reactive<SettingsForm>({
   // Allow user view error requests
   allow_user_view_error_requests: false,
 });
+
+type OpenAISchedulerMode = "priority_saturation" | "advanced";
+
+const schedulerModeConfirmation = reactive<{
+  show: boolean;
+  target: OpenAISchedulerMode | null;
+}>({
+  show: false,
+  target: null,
+});
+
+const schedulerModeConfirmationTitle = computed(() =>
+  schedulerModeConfirmation.target === "advanced"
+    ? t("admin.settings.openaiPrioritySaturation.switchToAdvancedTitle")
+    : t("admin.settings.openaiPrioritySaturation.switchToPriorityTitle"),
+);
+
+const schedulerModeConfirmationMessage = computed(() =>
+  schedulerModeConfirmation.target === "advanced"
+    ? t("admin.settings.openaiPrioritySaturation.switchToAdvancedMessage")
+    : t("admin.settings.openaiPrioritySaturation.switchToPriorityMessage"),
+);
+
+function handlePrioritySaturationToggle(enabled: boolean) {
+  if (!enabled) {
+    form.openai_priority_saturation_enabled = false;
+    return;
+  }
+  if (form.openai_advanced_scheduler_enabled) {
+    schedulerModeConfirmation.target = "priority_saturation";
+    schedulerModeConfirmation.show = true;
+    return;
+  }
+  form.openai_priority_saturation_enabled = true;
+}
+
+function handleAdvancedSchedulerToggle(enabled: boolean) {
+  if (!enabled) {
+    form.openai_advanced_scheduler_enabled = false;
+    return;
+  }
+  if (form.openai_priority_saturation_enabled) {
+    schedulerModeConfirmation.target = "advanced";
+    schedulerModeConfirmation.show = true;
+    return;
+  }
+  form.openai_advanced_scheduler_enabled = true;
+}
+
+function confirmOpenAISchedulerModeSwitch() {
+  if (schedulerModeConfirmation.target === "priority_saturation") {
+    form.openai_advanced_scheduler_enabled = false;
+    form.openai_priority_saturation_enabled = true;
+  } else if (schedulerModeConfirmation.target === "advanced") {
+    form.openai_priority_saturation_enabled = false;
+    form.openai_advanced_scheduler_enabled = true;
+  }
+  schedulerModeConfirmation.show = false;
+  schedulerModeConfirmation.target = null;
+}
+
+function cancelOpenAISchedulerModeSwitch() {
+  schedulerModeConfirmation.show = false;
+  schedulerModeConfirmation.target = null;
+}
 
 type OpenAIAdvancedSchedulerOverrideKey =
   | "openai_advanced_scheduler_lb_top_k"
@@ -9851,6 +10008,16 @@ function findDuplicateDefaultSubscription(
 }
 
 async function saveSettings() {
+  if (
+    form.openai_priority_saturation_enabled &&
+    form.openai_advanced_scheduler_enabled
+  ) {
+    appStore.showError(
+      t("admin.settings.openaiPrioritySaturation.mutualExclusionError"),
+    );
+    return;
+  }
+
   saving.value = true;
   try {
     const normalizedTableDefaultPageSize = Math.floor(
@@ -10228,6 +10395,8 @@ async function saveSettings() {
       openai_oauth_scheduling_rate_multiplier:
         form.openai_oauth_scheduling_rate_multiplier,
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
+      openai_priority_saturation_enabled:
+        form.openai_priority_saturation_enabled,
       openai_advanced_scheduler_sticky_weighted_enabled:
         form.openai_advanced_scheduler_sticky_weighted_enabled,
       openai_advanced_scheduler_subscription_priority_enabled:

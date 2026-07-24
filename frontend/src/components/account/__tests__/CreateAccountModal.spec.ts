@@ -114,7 +114,8 @@ async function selectButtonByText(wrapper: ReturnType<typeof mountModal>, text: 
 async function submitApiKeyAccount(
   platform: 'openai' | 'anthropic',
   enableLongContextBilling = false,
-  disableUpstreamBillingProbe = false
+  disableUpstreamBillingProbe = false,
+  affinityReserve = 0
 ) {
   const wrapper = mountModal()
   await selectButtonByText(wrapper, platform === 'openai' ? 'OpenAI' : 'admin.accounts.claudeConsole')
@@ -128,6 +129,9 @@ async function submitApiKeyAccount(
   }
   if (disableUpstreamBillingProbe) {
     await wrapper.get('[data-testid="upstream-billing-auto-probe"]').trigger('click')
+  }
+  if (platform === 'openai' && affinityReserve > 0) {
+    await wrapper.get('[data-testid="account-affinity-concurrency-reserve"]').setValue(affinityReserve)
   }
   await wrapper.get('form#create-account-form').trigger('submit.prevent')
   await flushPromises()
@@ -165,6 +169,72 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
     expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+
+  it('stores the OpenAI affinity concurrency reserve in account extra', async () => {
+    await submitApiKeyAccount('openai', false, false, 3)
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.affinity_concurrency_reserve).toBe(3)
+  })
+
+  it('keeps invalid capacity input visible and blocks submission instead of clamping it', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+
+    await wrapper.get('[data-testid="account-concurrency"]').setValue('3')
+    const reserveInput = wrapper.get('[data-testid="account-affinity-concurrency-reserve"]')
+    await reserveInput.setValue('3.5')
+    expect((reserveInput.element as HTMLInputElement).value).toBe('3.5')
+    expect(wrapper.get('[data-testid="account-affinity-concurrency-reserve-error"]').text())
+      .toBe('admin.accounts.capacityValidation.reserveNonNegativeInteger')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+
+    await reserveInput.setValue('3')
+    expect(wrapper.get('[data-testid="account-affinity-concurrency-reserve-error"]').text())
+      .toBe('admin.accounts.capacityValidation.reserveMustBeLessThanConcurrency')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('allows C=0 as unlimited concurrency and requires R=0', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Unlimited OpenAI')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="account-concurrency"]').setValue('0')
+
+    const reserveInput = wrapper.get('[data-testid="account-affinity-concurrency-reserve"]')
+    expect((reserveInput.element as HTMLInputElement).disabled).toBe(true)
+    expect(wrapper.text()).toContain('admin.accounts.affinityConcurrencyReserveUnlimited')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      concurrency: 0,
+      extra: expect.objectContaining({ affinity_concurrency_reserve: 0 })
+    }))
+  })
+
+  it('requires positive concurrency for Grok OAuth accounts', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Grok')
+    await wrapper.get('[data-testid="account-concurrency"]').setValue('0')
+
+    expect(wrapper.get('[data-testid="account-concurrency-error"]').text())
+      .toBe('admin.accounts.capacityValidation.concurrencyMustBePositiveInteger')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(wrapper.findComponent(OAuthAuthorizationFlowStub).exists()).toBe(false)
+    expect(createAccountMock).not.toHaveBeenCalled()
   })
 
   it('enables upstream billing probes by default for new OpenAI API key accounts', async () => {

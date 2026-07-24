@@ -196,7 +196,7 @@
           row-key="id"
           :server-side-sort="true"
           @sort="handleSort"
-          default-sort-key="name"
+          default-sort-key="priority"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="156"
@@ -544,20 +544,23 @@ type AccountBulkEditTarget =
       selectedPlatforms: AccountPlatform[]
       selectedTypes: AccountType[]
     }
+type SelectedAccountMetadata = Pick<Account, 'platform' | 'type'>
+const selectedAccountMetadataByID = reactive(new Map<number, SelectedAccountMetadata>())
+const hasCompleteSelectedAccountMetadata = computed(() =>
+  selIds.value.every(accountID => selectedAccountMetadataByID.has(accountID))
+)
 const selPlatforms = computed<AccountPlatform[]>(() => {
-  const platforms = new Set(
-    accounts.value
-      .filter(a => isSelected(a.id))
-      .map(a => a.platform)
-  )
+  if (!hasCompleteSelectedAccountMetadata.value) return []
+  const platforms = new Set(selIds.value.map(
+    accountID => selectedAccountMetadataByID.get(accountID)!.platform
+  ))
   return [...platforms]
 })
 const selTypes = computed<AccountType[]>(() => {
-  const types = new Set(
-    accounts.value
-      .filter(a => isSelected(a.id))
-      .map(a => a.type)
-  )
+  if (!hasCompleteSelectedAccountMetadata.value) return []
+  const types = new Set(selIds.value.map(
+    accountID => selectedAccountMetadataByID.get(accountID)!.type
+  ))
   return [...types]
 })
 const showCreate = ref(false)
@@ -613,14 +616,16 @@ const accountToolsDropdownStyle = computed(() => ({
   width: `${accountToolsDropdownPosition.width}px`
 }))
 const hiddenColumns = reactive<Set<string>>(new Set())
-const DEFAULT_HIDDEN_COLUMNS = ['today_stats', 'proxy', 'notes', 'priority', 'scheduler_score', 'rate_multiplier']
+const DEFAULT_HIDDEN_COLUMNS = ['today_stats', 'proxy', 'notes', 'scheduler_score', 'rate_multiplier']
 const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
-// One-time migration: hide scheduler score for existing admins too, because showing it opt-ins to heavy backend scoring.
+// One-time migration: keep scheduler score hidden and make Priority visible for deterministic scheduling.
 const HIDDEN_COLUMNS_VERSION_KEY = 'account-hidden-columns-version'
-const HIDDEN_COLUMNS_CURRENT_VERSION = 'scheduler-score-hidden-by-default'
+const HIDDEN_COLUMNS_CURRENT_VERSION = 'priority-visible-scheduler-score-hidden'
 
 // Sorting settings
 const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
+const ACCOUNT_SORT_VERSION_KEY = 'account-table-sort-version'
+const ACCOUNT_SORT_CURRENT_VERSION = 'priority-default-v1'
 type AccountSortOrder = 'asc' | 'desc'
 type AccountSortState = {
   sort_by: string
@@ -639,17 +644,34 @@ const ACCOUNT_SORTABLE_KEYS = new Set([
   'expires_at'
 ])
 const loadInitialAccountSortState = (): AccountSortState => {
-  const fallback: AccountSortState = { sort_by: 'name', sort_order: 'asc' }
+  const fallback: AccountSortState = { sort_by: 'priority', sort_order: 'asc' }
   try {
     const raw = localStorage.getItem(ACCOUNT_SORT_STORAGE_KEY)
-    if (!raw) return fallback
+    if (!raw) {
+      localStorage.setItem(ACCOUNT_SORT_VERSION_KEY, ACCOUNT_SORT_CURRENT_VERSION)
+      return fallback
+    }
     const parsed = JSON.parse(raw) as { key?: string; order?: string }
     const key = typeof parsed.key === 'string' ? parsed.key : ''
     if (!ACCOUNT_SORTABLE_KEYS.has(key)) return fallback
-    return {
+    const saved: AccountSortState = {
       sort_by: key,
       sort_order: parsed.order === 'desc' ? 'desc' : 'asc'
     }
+    if (localStorage.getItem(ACCOUNT_SORT_VERSION_KEY) === ACCOUNT_SORT_CURRENT_VERSION) {
+      return saved
+    }
+
+    const migrated =
+      key === 'name' && saved.sort_order === 'asc'
+        ? fallback
+        : saved
+    localStorage.setItem(ACCOUNT_SORT_STORAGE_KEY, JSON.stringify({
+      key: migrated.sort_by,
+      order: migrated.sort_order
+    }))
+    localStorage.setItem(ACCOUNT_SORT_VERSION_KEY, ACCOUNT_SORT_CURRENT_VERSION)
+    return migrated
   } catch {
     return fallback
   }
@@ -774,9 +796,10 @@ const loadSavedColumns = () => {
       parsed.forEach(key => {
         hiddenColumns.add(key)
       })
-      // Older saved column layouts may have scheduler_score visible; migrate them to the new safe default once.
+      // Older saved layouts hid Priority by default and could expose the expensive scheduler score.
       if (localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY) !== HIDDEN_COLUMNS_CURRENT_VERSION) {
         hiddenColumns.add('scheduler_score')
+        hiddenColumns.delete('priority')
         localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
         localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
       }
@@ -929,6 +952,27 @@ const {
   rows: accounts,
   getId: (account) => account.id
 })
+
+watch(
+  [accounts, selIds],
+  ([visibleAccounts, selectedAccountIDs]) => {
+    const selectedIDSet = new Set(selectedAccountIDs)
+    for (const accountID of selectedAccountMetadataByID.keys()) {
+      if (!selectedIDSet.has(accountID)) {
+        selectedAccountMetadataByID.delete(accountID)
+      }
+    }
+    for (const account of visibleAccounts) {
+      if (selectedIDSet.has(account.id)) {
+        selectedAccountMetadataByID.set(account.id, {
+          platform: account.platform,
+          type: account.type
+        })
+      }
+    }
+  },
+  { immediate: true, flush: 'sync' }
+)
 
 const swipeVirtualContext: SwipeSelectVirtualContext = {
   getVirtualizer: () => dataTableRef.value?.virtualizer ?? null,
@@ -1681,6 +1725,24 @@ const collectSelectionMetadata = (rows: Account[]) => {
   return { selectedPlatforms, selectedTypes }
 }
 
+const collectFilteredSelectionMetadata = (
+  filters: ReturnType<typeof buildBulkEditFilterSnapshot>,
+  preview: { items: Account[]; total: number }
+) => {
+  const previewIsComplete = preview.items.length >= preview.total
+  const completeMetadata = previewIsComplete
+    ? collectSelectionMetadata(preview.items)
+    : { selectedPlatforms: [], selectedTypes: [] }
+  return {
+    selectedPlatforms: filters.platform
+      ? [filters.platform as AccountPlatform]
+      : completeMetadata.selectedPlatforms,
+    selectedTypes: filters.type
+      ? [filters.type as AccountType]
+      : completeMetadata.selectedTypes
+  }
+}
+
 const openBulkEditSelected = () => {
   bulkEditTarget.value = {
     mode: 'selected',
@@ -1694,7 +1756,7 @@ const openBulkEditSelected = () => {
 const openBulkEditFiltered = async () => {
   const filters = buildBulkEditFilterSnapshot()
   const preview = await adminAPI.accounts.list(1, 100, filters)
-  const { selectedPlatforms, selectedTypes } = collectSelectionMetadata(preview.items)
+  const { selectedPlatforms, selectedTypes } = collectFilteredSelectionMetadata(filters, preview)
   bulkEditTarget.value = {
     mode: 'filtered',
     filters,

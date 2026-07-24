@@ -82,9 +82,10 @@ const DataTableStub = {
 
 const AccountBulkActionsBarStub = {
   props: ['selectedIds'],
-  emits: ['edit-filtered', 'probe-upstream-billing'],
+  emits: ['edit-selected', 'edit-filtered', 'probe-upstream-billing'],
   template: `
     <div>
+      <button data-test="edit-selected" @click="$emit('edit-selected')">edit selected</button>
       <button data-test="edit-filtered" @click="$emit('edit-filtered')">edit filtered</button>
       <button data-test="probe-upstream-billing" @click="$emit('probe-upstream-billing')">probe</button>
     </div>
@@ -98,7 +99,14 @@ const PaginationStub = {
 
 const BulkEditAccountModalStub = {
   props: ['show', 'target'],
-  template: '<div data-test="bulk-edit-modal" :data-show="String(show)" :data-target-mode="target?.mode ?? \'\'"></div>'
+  template: `
+    <div
+      data-test="bulk-edit-modal"
+      :data-show="String(show)"
+      :data-target-mode="target?.mode ?? ''"
+      :data-target-platforms="target?.selectedPlatforms?.join(',') ?? ''"
+    ></div>
+  `
 }
 
 describe('admin AccountsView bulk edit scope', () => {
@@ -176,6 +184,71 @@ describe('admin AccountsView bulk edit scope', () => {
 
     expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-show')).toBe('true')
     expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-target-mode')).toBe('filtered')
+  })
+
+  it('does not infer all filtered platforms from an incomplete first-page preview', async () => {
+    const previewItems = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      name: `openai-${index + 1}`,
+      platform: 'openai',
+      type: 'apikey',
+      status: 'active',
+      schedulable: true,
+      concurrency: 1,
+      priority: index,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z'
+    }))
+    listAccounts.mockResolvedValue({
+      items: previewItems,
+      total: 101,
+      page: 1,
+      page_size: 100,
+      pages: 2
+    })
+
+    const wrapper = mount(AccountsView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          TablePageLayout: {
+            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+          },
+          DataTable: DataTableStub,
+          Pagination: true,
+          ConfirmDialog: true,
+          AccountTableActions: { template: '<div><slot name="beforeCreate" /><slot name="after" /></div>' },
+          AccountTableFilters: { template: '<div></div>' },
+          AccountBulkActionsBar: AccountBulkActionsBarStub,
+          AccountActionMenu: true,
+          ImportDataModal: true,
+          ReAuthAccountModal: true,
+          AccountTestModal: true,
+          AccountStatsModal: true,
+          ScheduledTestsPanel: true,
+          SyncFromCrsModal: true,
+          TempUnschedStatusModal: true,
+          ErrorPassthroughRulesModal: true,
+          TLSFingerprintProfilesModal: true,
+          CreateAccountModal: true,
+          EditAccountModal: true,
+          BulkEditAccountModal: BulkEditAccountModalStub,
+          PlatformTypeBadge: true,
+          AccountCapacityCell: true,
+          AccountStatusIndicator: true,
+          AccountTodayStatsCell: true,
+          AccountGroupsCell: true,
+          AccountUsageCell: true,
+          Icon: true
+        }
+      }
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-test="edit-filtered"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-target-platforms')).toBe('')
   })
 
   it('renders the created_at column by default', async () => {
@@ -374,6 +447,82 @@ describe('admin AccountsView bulk edit scope', () => {
     await flushPromises()
 
     expect(probeUpstreamBillingBatch).toHaveBeenCalledWith([7, 11])
+  })
+
+  it('keeps selected account platform metadata complete across pages', async () => {
+    const account = (id: number, platform: 'anthropic' | 'openai') => ({
+      id,
+      name: `account-${id}`,
+      platform,
+      type: 'apikey',
+      status: 'active',
+      schedulable: true,
+      concurrency: 1,
+      priority: 1,
+      created_at: '2026-07-13T00:00:00Z',
+      updated_at: '2026-07-13T00:00:00Z'
+    })
+    listAccounts
+      .mockResolvedValueOnce({
+        items: [account(7, 'anthropic')],
+        total: 2,
+        page: 1,
+        page_size: 1,
+        pages: 2
+      })
+      .mockResolvedValueOnce({
+        items: [account(11, 'openai')],
+        total: 2,
+        page: 2,
+        page_size: 1,
+        pages: 2
+      })
+
+    const wrapper = mount(AccountsView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          TablePageLayout: { template: '<div><slot name="table" /><slot name="pagination" /></div>' },
+          DataTable: DataTableStub,
+          Pagination: PaginationStub,
+          ConfirmDialog: true,
+          AccountTableActions: true,
+          AccountTableFilters: true,
+          AccountBulkActionsBar: AccountBulkActionsBarStub,
+          AccountActionMenu: true,
+          ImportDataModal: true,
+          ReAuthAccountModal: true,
+          AccountTestModal: true,
+          AccountStatsModal: true,
+          ScheduledTestsPanel: true,
+          SyncFromCrsModal: true,
+          TempUnschedStatusModal: true,
+          ErrorPassthroughRulesModal: true,
+          TLSFingerprintProfilesModal: true,
+          CreateAccountModal: true,
+          EditAccountModal: true,
+          BulkEditAccountModal: BulkEditAccountModalStub,
+          PlatformTypeBadge: true,
+          AccountCapacityCell: true,
+          AccountStatusIndicator: true,
+          AccountTodayStatsCell: true,
+          AccountGroupsCell: true,
+          AccountUsageCell: true,
+          Icon: true
+        }
+      }
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-test="select-row"] input').trigger('change')
+    await wrapper.get('[data-test="next-page"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="select-row"] input').trigger('change')
+    await wrapper.get('[data-test="edit-selected"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-target-platforms'))
+      .toBe('anthropic,openai')
   })
 
   it('reloads the server-sorted list after a batch probe changes a snapshot', async () => {

@@ -1016,21 +1016,23 @@ func extractOpenAIResponseIDFromJSONBytes(body []byte) string {
 	return strings.TrimSpace(gjson.GetBytes(body, "response.id").String())
 }
 
-func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *gin.Context, account *Account, responseID string) {
+func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *gin.Context, account *Account, responseID string) bool {
 	if s == nil || account == nil || account.ID <= 0 {
-		return
+		return false
 	}
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" {
-		return
+		return false
 	}
 	store := s.getOpenAIWSStateStore()
 	if store == nil {
-		return
+		return false
 	}
 	groupID := getOpenAIGroupIDFromContext(c)
 	ttl := s.openAIWSResponseStickyTTL()
-	logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, store.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
+	err := store.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+	logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, err)
+	return err == nil
 }
 
 func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {

@@ -472,6 +472,9 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Status:      StatusActive,
 		Schedulable: true,
 	}
+	if err := ValidateAccountAffinityConcurrencyReserve(account.Platform, account.Concurrency, account.Extra); err != nil {
+		return nil, err
+	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
@@ -758,6 +761,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Concurrency != nil {
 		account.Concurrency = normalizeAccountConcurrency(account.Platform, account.Type, *input.Concurrency)
 	}
+	if err := ValidateAccountAffinityConcurrencyReserve(account.Platform, account.Concurrency, account.Extra); err != nil {
+		return nil, err
+	}
 	// 只在指针非 nil 时更新 Priority（支持设置为 0）
 	if input.Priority != nil {
 		account.Priority = *input.Priority
@@ -857,13 +863,22 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OllamaCloudUsageSessionExtraKey)
 	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
-	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
+	_, hasLongContextBillingUpdate := updates[openAILongContextBillingEnabledKey]
+	_, hasAffinityReserveUpdate := updates[AccountExtraAffinityConcurrencyReserve]
+	if hasLongContextBillingUpdate || hasAffinityReserveUpdate {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
 			return err
 		}
-		if err := ValidateOpenAILongContextBillingExtra(account.Platform, updates); err != nil {
-			return err
+		if hasLongContextBillingUpdate {
+			if err := ValidateOpenAILongContextBillingExtra(account.Platform, updates); err != nil {
+				return err
+			}
+		}
+		if hasAffinityReserveUpdate {
+			if err := ValidateAccountAffinityConcurrencyReserve(account.Platform, account.Concurrency, updates); err != nil {
+				return err
+			}
 		}
 	}
 	if len(updates) == 0 {
@@ -907,15 +922,54 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
+	_, hasAffinityReserveUpdate := input.Extra[AccountExtraAffinityConcurrencyReserve]
+	var normalizedBulkConcurrency *int
 
 	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || input.ProbeEnabled != nil {
+	if len(input.Credentials) > 0 || input.ProxyID != nil || input.Concurrency != nil || needMixedChannelCheck || hasLongContextBillingUpdate || hasAffinityReserveUpdate || input.ProbeEnabled != nil {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
 		cachedTargets = loaded
+	}
+	if input.Concurrency != nil || hasAffinityReserveUpdate {
+		var effectiveConcurrency int
+		hasEffectiveConcurrency := false
+		for _, account := range cachedTargets {
+			if account == nil {
+				continue
+			}
+			concurrency := account.Concurrency
+			if input.Concurrency != nil {
+				concurrency = normalizeAccountConcurrency(account.Platform, account.Type, *input.Concurrency)
+				if hasEffectiveConcurrency && concurrency != effectiveConcurrency {
+					return nil, infraerrors.BadRequest(
+						"BULK_CONCURRENCY_NORMALIZATION_CONFLICT",
+						"bulk concurrency has different effective values for the selected account types; update those account types separately",
+					)
+				}
+				effectiveConcurrency = concurrency
+				hasEffectiveConcurrency = true
+			}
+			extra := account.Extra
+			if hasAffinityReserveUpdate {
+				extra = map[string]any{
+					AccountExtraAffinityConcurrencyReserve: input.Extra[AccountExtraAffinityConcurrencyReserve],
+				}
+			}
+			if err := ValidateAccountAffinityConcurrencyReserve(account.Platform, concurrency, extra); err != nil {
+				return nil, err
+			}
+		}
+		if input.Concurrency != nil {
+			normalizedValue := *input.Concurrency
+			if hasEffectiveConcurrency {
+				normalizedValue = effectiveConcurrency
+			}
+			normalizedBulkConcurrency = &normalizedValue
+		}
 	}
 	if input.ProbeEnabled != nil {
 		targetsByID := make(map[int64]*Account, len(cachedTargets))
@@ -1030,7 +1084,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		repoUpdates.ProxyID = input.ProxyID
 	}
 	if input.Concurrency != nil {
-		repoUpdates.Concurrency = input.Concurrency
+		repoUpdates.Concurrency = normalizedBulkConcurrency
 	}
 	if input.Priority != nil {
 		repoUpdates.Priority = input.Priority

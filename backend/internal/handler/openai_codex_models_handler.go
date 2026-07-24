@@ -32,6 +32,9 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		return
 	}
 
+	reqLog := requestLogger(c, "handler.openai_gateway.codex_models")
+	streamStarted := false
+
 	maxAccountSwitches := h.maxAccountSwitches
 	if maxAccountSwitches <= 0 {
 		maxAccountSwitches = 3
@@ -41,8 +44,22 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 	var lastUpstreamErr error
 
 	for {
-		account, err := h.gatewayService.SelectAccountForModelWithExclusions(c.Request.Context(), apiKey.GroupID, "", "", failedAccountIDs)
-		if err != nil {
+		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOptions(
+			c.Request.Context(),
+			apiKey.GroupID,
+			"",
+			"",
+			"",
+			failedAccountIDs,
+			service.OpenAIUpstreamTransportHTTPSSE,
+			"",
+			false,
+			service.OpenAIAccountSchedulingOptions{
+				CanTemporarilyOverflow: false,
+				Platform:               service.PlatformOpenAI,
+			},
+		)
+		if err != nil || selection == nil || selection.Account == nil {
 			if c.Request.Context().Err() != nil {
 				return
 			}
@@ -53,10 +70,29 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 			h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "No available OpenAI accounts")
 			return
 		}
+		account := selection.Account
+		accountRelease, acquired := h.acquireResponsesAccountSlot(
+			c,
+			apiKey.GroupID,
+			"",
+			selection,
+			false,
+			&streamStarted,
+			reqLog,
+		)
+		if !acquired {
+			return
+		}
+		account = selection.Account
 		// 让 ops 错误日志携带实际选中的上游账号，便于定位失效账号（#4544）。
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		manifest, err := h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), c.GetHeader("If-None-Match"))
+		manifest, err := func() (*service.CodexModelsManifest, error) {
+			if accountRelease != nil {
+				defer accountRelease()
+			}
+			return h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), c.GetHeader("If-None-Match"))
+		}()
 		if err != nil {
 			if c.Request.Context().Err() != nil {
 				return

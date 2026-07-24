@@ -881,6 +881,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 	select {
 	case result := <-resultCh:
 		require.Equal(t, "resp_passthrough_turn_1", result.RequestID)
+		require.True(t, result.ResponseAccountBound, "AfterTurn must run after the response account mapping is persisted")
 		require.True(t, result.OpenAIWSMode)
 		require.Equal(t, 2, result.Usage.InputTokens)
 		require.Equal(t, 3, result.Usage.OutputTokens)
@@ -1167,6 +1168,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 	select {
 	case result := <-resultCh:
 		require.Equal(t, "resp_http_bridge_1", result.RequestID)
+		require.True(t, result.ResponseAccountBound, "AfterTurn must run after the response account mapping is persisted")
 		require.True(t, result.OpenAIWSMode)
 		require.Equal(t, 2, result.Usage.InputTokens)
 		require.Equal(t, 1, result.Usage.OutputTokens)

@@ -2718,8 +2718,22 @@
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
-          <input v-model.number="form.concurrency" type="number" min="1" class="input"
-            @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
+          <input
+            v-model.number="form.concurrency"
+            type="number"
+            :min="accountAllowsUnlimitedConcurrency ? 0 : 1"
+            step="1"
+            class="input"
+            data-testid="account-concurrency"
+            :aria-invalid="Boolean(accountCapacity.concurrencyError)"
+          />
+          <p
+            v-if="accountCapacity.concurrencyError"
+            class="mt-1 text-xs text-red-600 dark:text-red-400"
+            data-testid="account-concurrency-error"
+          >
+            {{ capacityErrorText(accountCapacity.concurrencyError) }}
+          </p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
@@ -2744,6 +2758,43 @@
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
         </div>
+      </div>
+      <div
+        v-if="form.platform === 'openai'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <label class="input-label">{{ t('admin.accounts.affinityConcurrencyReserve') }}</label>
+        <input
+          v-model.number="affinityConcurrencyReserve"
+          type="number"
+          min="0"
+          step="1"
+          :max="accountCapacity.concurrency !== null && accountCapacity.concurrency > 0
+            ? accountCapacity.concurrency - 1
+            : undefined"
+          :disabled="accountCapacity.unlimited && affinityConcurrencyReserve === 0"
+          class="input"
+          data-testid="account-affinity-concurrency-reserve"
+          :aria-invalid="Boolean(accountCapacity.reserveError)"
+        />
+        <p v-if="accountCapacity.unlimited" class="input-hint">
+          {{ t('admin.accounts.affinityConcurrencyReserveUnlimited') }}
+        </p>
+        <p v-else class="input-hint">
+          {{ t('admin.accounts.affinityConcurrencyReserveHint', {
+            general: accountCapacity.general ?? '-',
+            reserve: accountCapacity.reserve ?? affinityConcurrencyReserve,
+            total: accountCapacity.concurrency ?? form.concurrency
+          }) }}
+        </p>
+        <p class="input-hint">{{ t('admin.accounts.affinityConcurrencyReserveIdleHint') }}</p>
+        <p
+          v-if="accountCapacity.reserveError"
+          class="mt-1 text-xs text-red-600 dark:text-red-400"
+          data-testid="account-affinity-concurrency-reserve-error"
+        >
+          {{ capacityErrorText(accountCapacity.reserveError) }}
+        </p>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
@@ -3554,6 +3605,10 @@ import {
   type HeaderOverrideRow
 } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
+import {
+  validateAccountCapacity,
+  type AccountCapacityError
+} from '@/utils/accountCapacity'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
@@ -3779,6 +3834,7 @@ const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
+const affinityConcurrencyReserve = ref(0)
 const openAILongContextBillingTouched = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
@@ -4070,6 +4126,20 @@ const form = reactive({
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
+const accountCapacity = computed(() =>
+  validateAccountCapacity(
+    form.concurrency,
+    form.platform === 'openai' ? affinityConcurrencyReserve.value : 0,
+    { allowUnlimited: accountAllowsUnlimitedConcurrency.value }
+  )
+)
+const accountAllowsUnlimitedConcurrency = computed(() =>
+  !(form.platform === 'grok' && accountCategory.value === 'oauth-based')
+)
+
+const capacityErrorText = (error: AccountCapacityError | null) =>
+  error ? t(`admin.accounts.capacityValidation.${error}`) : ''
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
@@ -4614,6 +4684,7 @@ const resetForm = () => {
   form.credentials = {}
   form.proxy_id = null
   form.concurrency = 10
+  affinityConcurrencyReserve.value = 0
   form.load_factor = null
   form.priority = 1
   form.rate_multiplier = 1
@@ -4724,6 +4795,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
+  extra.affinity_concurrency_reserve = affinityConcurrencyReserve.value
   if (accountCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
@@ -4904,6 +4976,16 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  const capacity = accountCapacity.value
+  if (capacity.concurrencyError) {
+    appStore.showError(capacityErrorText(capacity.concurrencyError))
+    return
+  }
+  if (form.platform === 'openai' && capacity.reserveError) {
+    appStore.showError(capacityErrorText(capacity.reserveError))
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {

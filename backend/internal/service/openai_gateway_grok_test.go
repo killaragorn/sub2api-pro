@@ -1407,6 +1407,12 @@ func TestGrokMediaVideoRequestBindingIsScopedToUserAndAPIKey(t *testing.T) {
 	hash := GrokMediaVideoRequestSessionHash("video-request-123", userID, apiKeyID)
 	require.NotEmpty(t, hash)
 	require.NoError(t, svc.BindGrokMediaVideoRequestAccount(ctx, &groupID, "video-request-123", userID, apiKeyID, 63))
+	require.NoError(t, svc.BindGrokMediaVideoRequestAccount(ctx, &groupID, "video-request-123", userID, apiKeyID, 63))
+	require.ErrorContains(
+		t,
+		svc.BindGrokMediaVideoRequestAccount(ctx, &groupID, "video-request-123", userID, apiKeyID, 64),
+		"already bound to account 63",
+	)
 
 	accountID, err := svc.ResolveGrokMediaVideoRequestAccount(ctx, &groupID, "video-request-123", userID, apiKeyID)
 	require.NoError(t, err)

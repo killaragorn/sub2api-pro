@@ -251,6 +251,7 @@ type UpdateSettingsRequest struct {
 	OpenAILowUpstreamRatePriorityEnabled               *bool    `json:"openai_low_upstream_rate_priority_enabled"`
 	OpenAIOAuthSchedulingRateMultiplier                *float64 `json:"openai_oauth_scheduling_rate_multiplier"`
 	OpenAIAdvancedSchedulerEnabled                     *bool    `json:"openai_advanced_scheduler_enabled"`
+	OpenAIPrioritySaturationEnabled                    *bool    `json:"openai_priority_saturation_enabled"`
 	OpenAIAdvancedSchedulerStickyWeightedEnabled       *bool    `json:"openai_advanced_scheduler_sticky_weighted_enabled"`
 	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled *bool    `json:"openai_advanced_scheduler_subscription_priority_enabled"`
 	OpenAIAdvancedSchedulerLBTopK                      *string  `json:"openai_advanced_scheduler_lb_top_k"`
@@ -1528,6 +1529,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAIAdvancedSchedulerEnabled
 		}(),
+		OpenAIPrioritySaturationEnabled: func() bool {
+			if req.OpenAIPrioritySaturationEnabled != nil {
+				return *req.OpenAIPrioritySaturationEnabled
+			}
+			return previousSettings.OpenAIPrioritySaturationEnabled
+		}(),
 		OpenAIAdvancedSchedulerStickyWeightedEnabled: func() bool {
 			if req.OpenAIAdvancedSchedulerStickyWeightedEnabled != nil {
 				return *req.OpenAIAdvancedSchedulerStickyWeightedEnabled
@@ -1936,6 +1943,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAILowUpstreamRatePriorityEnabled:                   updatedSettings.OpenAILowUpstreamRatePriorityEnabled,
 		OpenAIOAuthSchedulingRateMultiplier:                    updatedSettings.OpenAIOAuthSchedulingRateMultiplier,
 		OpenAIAdvancedSchedulerEnabled:                         updatedSettings.OpenAIAdvancedSchedulerEnabled,
+		OpenAIPrioritySaturationEnabled:                        updatedSettings.OpenAIPrioritySaturationEnabled,
 		OpenAIAdvancedSchedulerStickyWeightedEnabled:           updatedSettings.OpenAIAdvancedSchedulerStickyWeightedEnabled,
 		OpenAIAdvancedSchedulerSubscriptionPriorityEnabled:     updatedSettings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled,
 		OpenAIAdvancedSchedulerLBTopK:                          updatedSettings.OpenAIAdvancedSchedulerLBTopK,

@@ -288,15 +288,17 @@ func (s *OpenAIGatewayService) BindGrokMediaVideoRequestAccount(
 		return fmt.Errorf("grok video request binding cache is unavailable")
 	}
 	sessionHash := GrokMediaVideoRequestSessionHash(requestID, userID, apiKeyID)
-	cacheKey := s.openAISessionCacheKey(sessionHash)
-	if cacheKey == "" || accountID <= 0 {
+	if s.openAISessionCacheKey(sessionHash) == "" || accountID <= 0 {
 		return fmt.Errorf("grok video request binding is invalid")
 	}
-	ttl := openaiStickySessionTTL
-	if s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
-		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
+	ownerID, _, err := s.ClaimStickySession(ctx, groupID, sessionHash, accountID)
+	if err != nil {
+		return err
 	}
-	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, accountID, ttl)
+	if ownerID != accountID {
+		return fmt.Errorf("grok video request is already bound to account %d", ownerID)
+	}
+	return nil
 }
 
 func (s *OpenAIGatewayService) ResolveGrokMediaVideoRequestAccount(

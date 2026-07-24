@@ -944,7 +944,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageCount = nonStreamResult.imageCount
 			imageOutputSizes = nonStreamResult.imageOutputSizes
 		}
-		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+		responseAccountBound := s.bindHTTPResponseAccount(ctx, c, account, responseID)
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts).
 		// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
@@ -959,18 +959,19 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		forwardResult := &OpenAIForwardResult{
-			RequestID:       resp.Header.Get("x-request-id"),
-			ResponseID:      responseID,
-			Usage:           *usage,
-			Model:           originalModel,
-			BillingModel:    billingModel,
-			UpstreamModel:   upstreamModel,
-			ServiceTier:     serviceTier,
-			ReasoningEffort: reasoningEffort,
-			Stream:          reqStream,
-			OpenAIWSMode:    false,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:            resp.Header.Get("x-request-id"),
+			ResponseID:           responseID,
+			ResponseAccountBound: responseAccountBound,
+			Usage:                *usage,
+			Model:                originalModel,
+			BillingModel:         billingModel,
+			UpstreamModel:        upstreamModel,
+			ServiceTier:          serviceTier,
+			ReasoningEffort:      reasoningEffort,
+			Stream:               reqStream,
+			OpenAIWSMode:         false,
+			Duration:             time.Since(startTime),
+			FirstTokenMs:         firstTokenMs,
 		}
 		if imageCount > 0 {
 			forwardResult.ImageCount = imageCount

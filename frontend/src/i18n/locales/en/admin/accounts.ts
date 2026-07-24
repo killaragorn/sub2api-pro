@@ -267,6 +267,10 @@ export default {
       subscriptionExpires: 'Expires',
       // Capacity status tooltips
       capacity: {
+        concurrency: {
+          affinity: 'Concurrency capacity: C={total} total, G={general} for new sessions, R={reserve} reserved for established affinity',
+          unlimited: 'Unlimited account: concurrency slots are not capped and no affinity capacity is reserved'
+        },
         windowCost: {
           blocked: '5h window cost exceeded, account scheduling paused',
           stickyOnly: '5h window cost at threshold, only sticky sessions allowed',
@@ -791,6 +795,18 @@ export default {
       proxy: 'Proxy',
       noProxy: 'No Proxy',
       concurrency: 'Concurrency',
+      affinityConcurrencyReserve: 'Session-affinity concurrency reserve',
+      affinityConcurrencyReserveHint: 'General G={general}, affinity reserve R={reserve}, total C={total}. Every OpenAI scheduling policy observes this capacity split.',
+      affinityConcurrencyReserveBulkHint: 'When only R changes, the backend validates it against each account’s existing C. When C also changes, 0 ≤ R < C is required.',
+      affinityConcurrencyReserveUnlimited: 'C=0 means unlimited concurrency. Unlimited accounts do not use protected affinity slots, so R must be 0.',
+      affinityConcurrencyReserveIdleHint: 'The hard reserve is only available to requests with established account affinity and may remain idle without affinity traffic.',
+      capacityValidation: {
+        concurrencyNonNegativeInteger: 'Total concurrency C must be a non-negative integer.',
+        concurrencyMustBePositiveInteger: 'This account type requires total concurrency C to be a positive integer.',
+        reserveNonNegativeInteger: 'Affinity reserve R must be a non-negative integer.',
+        reserveMustBeZeroWhenUnlimited: 'C=0 means unlimited concurrency, so affinity reserve R must be 0.',
+        reserveMustBeLessThanConcurrency: 'Affinity reserve R must be lower than total concurrency C.'
+      },
       loadFactor: 'Load Factor',
       loadFactorHint: 'Higher load factor increases scheduling frequency',
       priority: 'Priority',

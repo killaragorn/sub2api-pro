@@ -114,7 +114,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	routingStart := time.Now()
 
 	for {
-		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOptions(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"",
@@ -124,9 +124,10 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			service.OpenAIUpstreamTransportHTTPSSE,
 			service.OpenAIEndpointCapabilityAlphaSearch,
 			false,
-			false,
-			false,
-			service.PlatformOpenAI,
+			service.OpenAIAccountSchedulingOptions{
+				CanTemporarilyOverflow: true,
+				Platform:               service.PlatformOpenAI,
+			},
 		)
 		if err != nil || selection == nil || selection.Account == nil {
 			if failoverClientGone(c) {
@@ -155,6 +156,8 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		if !acquired {
 			return
 		}
+		account = selection.Account
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		writerSizeBeforeForward := c.Writer.Size()
 		forwardStart := time.Now()

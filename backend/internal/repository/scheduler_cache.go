@@ -989,6 +989,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"mixed_scheduling",
 		"window_cost_limit",
 		"window_cost_sticky_reserve",
+		"affinity_concurrency_reserve",
 		"max_sessions",
 		"session_idle_timeout_minutes",
 		"openai_oauth_responses_websockets_v2_enabled",

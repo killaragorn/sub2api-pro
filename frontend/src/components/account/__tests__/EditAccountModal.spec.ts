@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
@@ -314,6 +314,92 @@ function mountModal(account = buildAccount()) {
 describe('EditAccountModal', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
+  })
+
+
+  it('loads and updates the OpenAI affinity concurrency reserve', async () => {
+    const account = {
+      ...buildAccount(),
+      concurrency: 5,
+      extra: { affinity_concurrency_reserve: 2 }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    const reserveInput = wrapper.get('[data-testid="account-affinity-concurrency-reserve"]')
+    expect((reserveInput.element as HTMLInputElement).value).toBe('2')
+
+    await reserveInput.setValue('3')
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.affinity_concurrency_reserve).toBe(3)
+  })
+
+  it('rejects fractional and out-of-range affinity reserves without rewriting the field', async () => {
+    const account = {
+      ...buildAccount(),
+      concurrency: 4,
+      extra: { affinity_concurrency_reserve: 1 }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    const reserveInput = wrapper.get('[data-testid="account-affinity-concurrency-reserve"]')
+
+    await reserveInput.setValue('4.5')
+    expect((reserveInput.element as HTMLInputElement).value).toBe('4.5')
+    expect(wrapper.get('[data-testid="account-affinity-concurrency-reserve-error"]').text())
+      .toBe('admin.accounts.capacityValidation.reserveNonNegativeInteger')
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).not.toHaveBeenCalled()
+
+    await reserveInput.setValue('4')
+    expect(wrapper.get('[data-testid="account-affinity-concurrency-reserve-error"]').text())
+      .toBe('admin.accounts.capacityValidation.reserveMustBeLessThanConcurrency')
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('supports unlimited concurrency only with a zero affinity reserve', async () => {
+    const account = {
+      ...buildAccount(),
+      concurrency: 0,
+      extra: { affinity_concurrency_reserve: 0 }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    expect((wrapper.get('[data-testid="account-affinity-concurrency-reserve"]').element as HTMLInputElement).disabled)
+      .toBe(true)
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      concurrency: 0,
+      extra: expect.objectContaining({ affinity_concurrency_reserve: 0 })
+    }))
+  })
+
+  it('requires positive concurrency for Grok OAuth accounts', async () => {
+    const account = buildGrokOAuthAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="account-concurrency"]').setValue('0')
+    expect(wrapper.get('[data-testid="account-concurrency-error"]').text())
+      .toBe('admin.accounts.capacityValidation.concurrencyMustBePositiveInteger')
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).not.toHaveBeenCalled()
   })
 
   it('reopening the same account rehydrates the OpenAI whitelist from props', async () => {

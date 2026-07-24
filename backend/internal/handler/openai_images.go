@@ -158,13 +158,16 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImagesOptions(
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			routingModel,
 			failedAccountIDs,
 			parsed.RequiredCapability,
+			service.OpenAIAccountSchedulingOptions{
+				CanTemporarilyOverflow: true,
+			},
 		)
 		if err != nil {
 			if failoverClientGone(c) {
@@ -214,6 +217,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			zap.Int("top_k", scheduleDecision.TopK),
 			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
+			zap.Int("general_limit", scheduleDecision.GeneralLimit),
+			zap.Int("hard_limit", scheduleDecision.HardLimit),
+			zap.Int("affinity_reserve", scheduleDecision.AffinityReserve),
+			zap.Int("general_reject_count", scheduleDecision.GeneralRejectCount),
+			zap.Bool("affinity_reserve_hit", scheduleDecision.AffinityReserveHit),
+			zap.Bool("temporary_overflow", scheduleDecision.TemporaryOverflow),
+			zap.Bool("affinity_wait", scheduleDecision.AffinityWait),
+			zap.Bool("affinity_rejected", scheduleDecision.AffinityRejected),
 		)
 
 		account := selection.Account
@@ -225,6 +236,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		if !acquired {
 			return
 		}
+		account = selection.Account
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		if !parsed.Stream && !jsonKeepaliveStarted {

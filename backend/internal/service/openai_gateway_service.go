@@ -223,8 +223,11 @@ type OpenAIUsage struct {
 type OpenAIForwardResult struct {
 	RequestID  string
 	ResponseID string
-	Usage      OpenAIUsage
-	Model      string // 原始模型（用于响应和日志显示）
+	// ResponseAccountBound confirms response_id -> account_id was persisted
+	// before session affinity is allowed to converge to this account.
+	ResponseAccountBound bool
+	Usage                OpenAIUsage
+	Model                string // 原始模型（用于响应和日志显示）
 	// BillingModel is the model used for cost calculation.
 	// When non-empty, CalculateCost uses this instead of Model.
 	// This is set by the Anthropic Messages conversion path where
@@ -322,6 +325,7 @@ type OpenAICompatibilityFallbackMetricsSnapshot struct {
 	SessionHashLegacyReadFallbackTotal int64   `json:"session_hash_legacy_read_fallback_total"`
 	SessionHashLegacyReadFallbackHit   int64   `json:"session_hash_legacy_read_fallback_hit"`
 	SessionHashLegacyDualWriteTotal    int64   `json:"session_hash_legacy_dual_write_total"`
+	SessionHashLegacyDualWriteError    int64   `json:"session_hash_legacy_dual_write_error_total"`
 	SessionHashLegacyReadHitRate       float64 `json:"session_hash_legacy_read_hit_rate"`
 
 	MetadataLegacyFallbackIsMaxTokensOneHaikuTotal int64 `json:"metadata_legacy_fallback_is_max_tokens_one_haiku_total"`
@@ -414,20 +418,24 @@ type OpenAIGatewayService struct {
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
-	openaiWSPoolOnce              sync.Once
-	openaiWSStateStoreOnce        sync.Once
-	openaiSchedulerOnce           sync.Once
-	openaiProxyStreamCircuitOnce  sync.Once
-	openaiWSPassthroughDialerOnce sync.Once
-	openaiModelTransientOnce      sync.Once
-	agentIdentityTaskMu           sync.Mutex
-	openaiWSPool                  *openAIWSConnPool
-	openaiWSStateStore            OpenAIWSStateStore
-	openaiScheduler               OpenAIAccountScheduler
-	openaiWSPassthroughDialer     openAIWSClientDialer
-	openaiAccountStats            *openAIAccountRuntimeStats
-	openaiModelTransient          *openAIAccountModelTransientState
-	openaiProxyStreamCircuit      *openAIProxyStreamCircuit
+	openaiWSPoolOnce               sync.Once
+	openaiWSStateStoreOnce         sync.Once
+	openaiAccountStatsOnce         sync.Once
+	openaiSchedulerOnce            sync.Once
+	openaiPrioritySaturationOnce   sync.Once
+	openaiSchedulerConflictLogOnce sync.Once
+	openaiProxyStreamCircuitOnce   sync.Once
+	openaiWSPassthroughDialerOnce  sync.Once
+	openaiModelTransientOnce       sync.Once
+	agentIdentityTaskMu            sync.Mutex
+	openaiWSPool                   *openAIWSConnPool
+	openaiWSStateStore             OpenAIWSStateStore
+	openaiScheduler                OpenAIAccountScheduler
+	openaiPrioritySaturation       OpenAIAccountScheduler
+	openaiWSPassthroughDialer      openAIWSClientDialer
+	openaiAccountStats             *openAIAccountRuntimeStats
+	openaiModelTransient           *openAIAccountModelTransientState
+	openaiProxyStreamCircuit       *openAIProxyStreamCircuit
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
@@ -437,6 +445,8 @@ type OpenAIGatewayService struct {
 	grokCredentialMutationLocks         sync.Map // key: int64(accountID), value: *sync.Mutex
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
+	openaiLegacyGeneralRejectTotal      atomic.Int64
+	openaiSchedulerMetricsLogCounter    atomic.Uint64
 	openaiWSRetryMetrics                openAIWSRetryMetrics
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
@@ -978,6 +988,7 @@ func SnapshotOpenAICompatibilityFallbackMetrics() OpenAICompatibilityFallbackMet
 		SessionHashLegacyReadFallbackTotal: legacyReadFallbackTotal,
 		SessionHashLegacyReadFallbackHit:   legacyReadFallbackHit,
 		SessionHashLegacyDualWriteTotal:    legacyDualWriteTotal,
+		SessionHashLegacyDualWriteError:    openAIStickyLegacyDualWriteErrorCount(),
 		SessionHashLegacyReadHitRate:       readHitRate,
 
 		MetadataLegacyFallbackIsMaxTokensOneHaikuTotal: isMaxTokensOneHaiku,

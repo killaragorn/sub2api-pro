@@ -154,7 +154,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOptions(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"",
@@ -164,9 +164,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			service.OpenAIUpstreamTransportAny,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
-			false,
-			true,
-			requestPlatform,
+			service.OpenAIAccountSchedulingOptions{
+				CanTemporarilyOverflow: true,
+				UseUpstreamTokenCost:   true,
+				Platform:               requestPlatform,
+			},
 		)
 		if err != nil {
 			if failoverClientGone(c) {
@@ -211,6 +213,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if !acquired {
 			return
 		}
+		account = selection.Account
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()

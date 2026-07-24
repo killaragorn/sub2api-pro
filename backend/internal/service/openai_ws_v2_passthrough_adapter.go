@@ -628,6 +628,23 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if account == nil {
 		return errors.New("account is nil")
 	}
+	groupID := getOpenAIGroupIDFromContext(c)
+	stateStore := s.getOpenAIWSStateStore()
+	bindResponseAccount := func(result *OpenAIForwardResult) {
+		if result == nil || stateStore == nil {
+			return
+		}
+		responseID := strings.TrimSpace(result.RequestID)
+		if responseID == "" {
+			return
+		}
+		ttl := s.openAIWSResponseStickyTTL()
+		bindErr := stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, bindErr)
+		if bindErr == nil {
+			result.ResponseAccountBound = true
+		}
+	}
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 		return err
 	}
@@ -1041,6 +1058,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					turnResult.Usage.OutputTokens,
 					turnResult.Usage.CacheReadInputTokens,
 				)
+				bindResponseAccount(turnResult)
 				if hooks != nil && hooks.AfterTurn != nil {
 					hooks.AfterTurn(turnNo, turnResult, nil)
 				}
@@ -1144,6 +1162,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Duration:              relayResult.Duration,
 		FirstTokenMs:          relayResult.FirstTokenMs,
 	}
+	bindResponseAccount(result)
 
 	turnCount := int(completedTurns.Load())
 	if relayExit == nil {

@@ -56,8 +56,8 @@ func (h *OpenAIGatewayHandler) GrokCountTokens(c *gin.Context) {
 }
 
 // CountTokens handles Anthropic-compatible POST /v1/messages/count_tokens for OpenAI groups.
-// It validates billing and routes to an OpenAI token-count bridge without taking concurrency slots
-// or recording usage.
+// It validates billing and routes to an OpenAI token-count bridge while taking
+// an account concurrency slot, but does not record usage.
 func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -148,7 +148,7 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	if preferredMappedModel != "" {
 		currentRoutingModel = preferredMappedModel
 	}
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOptions(
 		c.Request.Context(),
 		apiKey.GroupID,
 		"",
@@ -158,9 +158,10 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 		service.OpenAIUpstreamTransportAny,
 		service.OpenAIEndpointCapabilityChatCompletions,
 		false,
-		false,
-		false,
-		openAICompatibleRequestPlatform(c.Request.Context(), apiKey),
+		service.OpenAIAccountSchedulingOptions{
+			CanTemporarilyOverflow: true,
+			Platform:               openAICompatibleRequestPlatform(c.Request.Context(), apiKey),
+		},
 	)
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	if err != nil {
@@ -184,8 +185,23 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 
 	account := selection.Account
 	setOpsSelectedAccount(c, account.ID, account.Platform)
-	if selection.Acquired && selection.ReleaseFunc != nil {
-		defer selection.ReleaseFunc()
+	streamStarted := false
+	accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(
+		c,
+		apiKey.GroupID,
+		sessionHash,
+		selection,
+		false,
+		&streamStarted,
+		reqLog,
+	)
+	if !acquired {
+		return
+	}
+	account = selection.Account
+	setOpsSelectedAccount(c, account.ID, account.Platform)
+	if accountReleaseFunc != nil {
+		defer accountReleaseFunc()
 	}
 	forwardBody := mappedBodyForMessages(channelMapping.Mapped, channelMapping.MappedModel)
 	defaultMappedModel := preferredMappedModel

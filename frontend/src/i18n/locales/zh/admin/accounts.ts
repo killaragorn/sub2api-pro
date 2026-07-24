@@ -220,6 +220,10 @@ export default {
       subscriptionExpires: '到期',
       // 容量状态提示
       capacity: {
+        concurrency: {
+          affinity: '并发容量：C={total} 总容量，G={general} 新会话普通区，R={reserve} 仅供已有会话亲和使用',
+          unlimited: '无限并发账号：不限制并发槽位，也不使用会话亲和预留'
+        },
         windowCost: {
           blocked: '5h窗口费用超限，账号暂停调度',
           stickyOnly: '5h窗口费用达阈值，仅允许粘性会话',
@@ -846,6 +850,18 @@ export default {
       proxy: '代理',
       noProxy: '无代理',
       concurrency: '并发数',
+      affinityConcurrencyReserve: '会话亲和并发预留',
+      affinityConcurrencyReserveHint: '普通区 G={general}，亲和预留 R={reserve}，总容量 C={total}。所有 OpenAI 调度策略都会遵守此容量划分。',
+      affinityConcurrencyReserveBulkHint: '仅修改 R 时，后端会按每个账号的现有 C 分别校验；同时修改 C 时必须满足 0 ≤ R < C。',
+      affinityConcurrencyReserveUnlimited: 'C=0 表示无限并发；无限并发账号不使用亲和保护槽位，R 必须为 0。',
+      affinityConcurrencyReserveIdleHint: '硬预留只供原账号亲和请求使用；没有亲和流量时，这部分容量可能保持空闲。',
+      capacityValidation: {
+        concurrencyNonNegativeInteger: '总并发上限 C 必须是大于等于 0 的整数。',
+        concurrencyMustBePositiveInteger: '此账号类型要求总并发上限 C 必须是大于 0 的整数。',
+        reserveNonNegativeInteger: '亲和预留 R 必须是大于等于 0 的整数。',
+        reserveMustBeZeroWhenUnlimited: 'C=0 表示无限并发，此时亲和预留 R 必须为 0。',
+        reserveMustBeLessThanConcurrency: '亲和预留 R 必须小于总并发上限 C。'
+      },
       loadFactor: '负载因子',
       loadFactorHint: '提高负载因子可以提高对账号的调度频率',
       priority: '优先级',

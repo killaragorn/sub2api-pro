@@ -537,6 +537,20 @@ type AccountSelectionResult struct {
 	Acquired    bool
 	ReleaseFunc func()
 	WaitPlan    *AccountWaitPlan // nil means no wait allowed
+
+	// SessionOwnerID identifies the authoritative sticky-session owner observed
+	// while selecting this account. PreserveStickyBinding is true for temporary
+	// overflow: the request may use Account but must not replace that owner.
+	SessionOwnerID        int64
+	PreserveStickyBinding bool
+
+	// The remaining fields are retained only while an OpenAI selection is
+	// handed to a handler. They let the service reconcile post-wait owner races
+	// without leaking scheduling criteria into transport handlers.
+	openAIRequest                *OpenAIAccountScheduleRequest
+	convergeStickyBinding        bool
+	stickyBindingClaimed         bool
+	stickyBindingPreviousOwnerID int64
 }
 
 // ClaudeUsage 表示Claude API返回的usage信息

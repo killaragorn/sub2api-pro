@@ -533,14 +533,29 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				turn,
 				writeClientMessage,
 			)
-			if hooks != nil && hooks.AfterTurn != nil {
-				hooks.AfterTurn(turn, result, bridgeErr)
-			}
 			if bridgeErr != nil {
+				if hooks != nil && hooks.AfterTurn != nil {
+					hooks.AfterTurn(turn, result, bridgeErr)
+				}
 				return bridgeErr
 			}
 			if result == nil {
+				if hooks != nil && hooks.AfterTurn != nil {
+					hooks.AfterTurn(turn, nil, nil)
+				}
 				return errors.New("websocket http bridge turn result is nil")
+			}
+			responseID := strings.TrimSpace(result.RequestID)
+			if responseID != "" && stateStore != nil {
+				ttl := s.openAIWSResponseStickyTTL()
+				bindErr := stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, bindErr)
+				if bindErr == nil {
+					result.ResponseAccountBound = true
+				}
+			}
+			if hooks != nil && hooks.AfterTurn != nil {
+				hooks.AfterTurn(turn, result, nil)
 			}
 			bridgeReplayInput = cloneOpenAIWSRawMessages(turnReplayInput)
 			bridgeReplayInputExists = turnReplayInputExists
@@ -553,11 +568,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if stateStore != nil && sessionHash != "" {
 					stateStore.BindSessionTurnState(groupID, sessionHash, bridgeTurnState, s.openAIWSSessionStickyTTL())
 				}
-			}
-			responseID := strings.TrimSpace(result.RequestID)
-			if responseID != "" && stateStore != nil {
-				ttl := s.openAIWSResponseStickyTTL()
-				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 			}
 			nextClientMessage, readErr := readClientMessage()
 			if readErr != nil {
@@ -1533,13 +1543,25 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnPrevRecoveryTried = false
 		lastTurnFinishedAt = time.Now()
 		lastTurnClean = true
-		if hooks != nil && hooks.AfterTurn != nil {
-			hooks.AfterTurn(turn, result, nil)
-		}
 		if result == nil {
+			if hooks != nil && hooks.AfterTurn != nil {
+				hooks.AfterTurn(turn, nil, nil)
+			}
 			return errors.New("websocket turn result is nil")
 		}
 		responseID := strings.TrimSpace(result.RequestID)
+		if responseID != "" && stateStore != nil {
+			ttl := s.openAIWSResponseStickyTTL()
+			bindErr := stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, bindErr)
+			if bindErr == nil {
+				result.ResponseAccountBound = true
+			}
+			stateStore.BindResponseConn(responseID, connID, ttl)
+		}
+		if hooks != nil && hooks.AfterTurn != nil {
+			hooks.AfterTurn(turn, result, nil)
+		}
 		lastTurnResponseID = responseID
 		lastTurnPayload = cloneOpenAIWSPayloadBytes(currentPayload)
 		lastTurnReplayInput = cloneOpenAIWSRawMessages(currentTurnReplayInput)
@@ -1562,11 +1584,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			lastTurnStrictState = nextStrictState
 		}
 
-		if responseID != "" && stateStore != nil {
-			ttl := s.openAIWSResponseStickyTTL()
-			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
-			stateStore.BindResponseConn(responseID, connID, ttl)
-		}
 		if stateStore != nil && storeDisabled && sessionHash != "" {
 			stateStore.BindSessionConn(groupID, sessionHash, connID, s.openAIWSSessionStickyTTL())
 		}

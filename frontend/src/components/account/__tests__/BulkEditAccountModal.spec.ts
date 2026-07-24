@@ -88,6 +88,92 @@ describe('BulkEditAccountModal', () => {
     } as any)
   })
 
+  it('bulk-updates affinity reserve only for an all-OpenAI selection', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-affinity-reserve-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-affinity-reserve').setValue('2')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        affinity_concurrency_reserve: 2
+      }
+    })
+  })
+
+  it('validates exact integer C/R values when both fields are enabled', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-concurrency-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-affinity-reserve-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-concurrency').setValue('3')
+    const reserveInput = wrapper.get('#bulk-edit-affinity-reserve')
+    await reserveInput.setValue('3.5')
+    expect((reserveInput.element as HTMLInputElement).value).toBe('3.5')
+    expect(wrapper.get('[data-testid="bulk-edit-affinity-reserve-error"]').text())
+      .toBe('admin.accounts.capacityValidation.reserveNonNegativeInteger')
+
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
+
+    await reserveInput.setValue('3')
+    expect(wrapper.get('[data-testid="bulk-edit-affinity-reserve-error"]').text())
+      .toBe('admin.accounts.capacityValidation.reserveMustBeLessThanConcurrency')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
+  })
+
+  it('allows a reserve-only update to defer per-account C validation to the backend', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-affinity-reserve-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-affinity-reserve').setValue('20')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: { affinity_concurrency_reserve: 20 }
+    })
+  })
+
+  it('does not expose affinity reserve for mixed-platform selections', () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai', 'anthropic'],
+      selectedTypes: ['apikey']
+    })
+
+    expect(wrapper.find('#bulk-edit-affinity-reserve-enabled').exists()).toBe(false)
+  })
+
+  it('requires positive concurrency for an all-Grok OAuth selection', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['grok'],
+      selectedTypes: ['oauth']
+    })
+
+    await wrapper.get('#bulk-edit-concurrency-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-concurrency').setValue('0')
+    expect(wrapper.get('[data-testid="bulk-edit-concurrency-error"]').text())
+      .toBe('admin.accounts.capacityValidation.concurrencyMustBePositiveInteger')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
+  })
+
   it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', async () => {
     const wrapper = mountModal()
     const selector = wrapper.findComponent(ModelWhitelistSelector)

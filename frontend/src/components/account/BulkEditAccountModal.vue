@@ -604,13 +604,20 @@
             v-model.number="concurrency"
             id="bulk-edit-concurrency"
             type="number"
-            min="1"
+            :min="bulkAllowsUnlimitedConcurrency ? 0 : 1"
+            step="1"
             :disabled="!enableConcurrency"
             class="input"
             :class="!enableConcurrency && 'cursor-not-allowed opacity-50'"
             aria-labelledby="bulk-edit-concurrency-label"
-            @input="concurrency = Math.max(1, concurrency || 1)"
           />
+          <p
+            v-if="bulkConcurrencyError"
+            class="mt-1 text-xs text-red-600 dark:text-red-400"
+            data-testid="bulk-edit-concurrency-error"
+          >
+            {{ capacityErrorText(bulkConcurrencyError) }}
+          </p>
         </div>
         <div>
           <div class="mb-3 flex items-center justify-between">
@@ -701,6 +708,59 @@
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
         </div>
       </div>
+      <div
+        v-if="allTargetsOpenAI"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="mb-3 flex items-center justify-between">
+          <label
+            id="bulk-edit-affinity-reserve-label"
+            class="input-label mb-0"
+            for="bulk-edit-affinity-reserve-enabled"
+          >
+            {{ t('admin.accounts.affinityConcurrencyReserve') }}
+          </label>
+          <input
+            v-model="enableAffinityConcurrencyReserve"
+            id="bulk-edit-affinity-reserve-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-affinity-reserve"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <input
+          v-model.number="affinityConcurrencyReserve"
+          id="bulk-edit-affinity-reserve"
+          type="number"
+          min="0"
+          step="1"
+          :max="enableConcurrency && bulkCapacity.concurrency !== null && bulkCapacity.concurrency > 0
+            ? bulkCapacity.concurrency - 1
+            : undefined"
+          :disabled="!enableAffinityConcurrencyReserve"
+          class="input"
+          :class="!enableAffinityConcurrencyReserve && 'cursor-not-allowed opacity-50'"
+          aria-labelledby="bulk-edit-affinity-reserve-label"
+        />
+        <p
+          v-if="enableConcurrency && bulkCapacity.unlimited"
+          class="input-hint"
+        >
+          {{ t('admin.accounts.affinityConcurrencyReserveUnlimited') }}
+        </p>
+        <p class="input-hint">
+          {{ t('admin.accounts.affinityConcurrencyReserveBulkHint') }}
+        </p>
+        <p class="input-hint">{{ t('admin.accounts.affinityConcurrencyReserveIdleHint') }}</p>
+        <p
+          v-if="bulkAffinityReserveError"
+          class="mt-1 text-xs text-red-600 dark:text-red-400"
+          data-testid="bulk-edit-affinity-reserve-error"
+        >
+          {{ capacityErrorText(bulkAffinityReserveError) }}
+        </p>
+      </div>
+
 
       <!-- Status -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -1275,6 +1335,12 @@ import {
   resolveOpenAIWSModeConcurrencyHintKey
 } from '@/utils/openaiWsMode'
 import type { OpenAIWSMode } from '@/utils/openaiWsMode'
+import {
+  isNonNegativeInteger,
+  validateAccountCapacity,
+  type AccountCapacityError
+} from '@/utils/accountCapacity'
+
 interface Props {
   show: boolean
   accountIds: number[]
@@ -1310,6 +1376,20 @@ const allTargetsGrok = computed(
   () =>
     targetSelectedPlatforms.value.length > 0 &&
     targetSelectedPlatforms.value.every((p) => p === 'grok')
+)
+const allTargetsOpenAI = computed(
+  () =>
+    targetSelectedPlatforms.value.length === 1 &&
+    targetSelectedPlatforms.value[0] === 'openai'
+)
+const bulkAllowsUnlimitedConcurrency = computed(
+  () =>
+    !(
+      targetSelectedPlatforms.value.length === 1 &&
+      targetSelectedPlatforms.value[0] === 'grok' &&
+      targetSelectedTypes.value.length === 1 &&
+      targetSelectedTypes.value[0] === 'oauth'
+    )
 )
 const isMixedPlatform = computed(() => targetSelectedPlatforms.value.length > 1)
 
@@ -1393,6 +1473,7 @@ const enableHeaderOverride = ref(false)
 const enableProxy = ref(false)
 const enableConcurrency = ref(false)
 const enableLoadFactor = ref(false)
+const enableAffinityConcurrencyReserve = ref(false)
 const enablePriority = ref(false)
 const enableRateMultiplier = ref(false)
 const enableStatus = ref(false)
@@ -1423,6 +1504,7 @@ const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const proxyId = ref<number | null>(null)
 const concurrency = ref(1)
+const affinityConcurrencyReserve = ref(0)
 const loadFactor = ref<number | null>(null)
 const priority = ref(1)
 const rateMultiplier = ref(1)
@@ -1441,6 +1523,25 @@ const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
 const bulkRpmStickyBuffer = ref<number | null>(null)
 const userMsgQueueMode = ref<string | null>(null)
+const bulkCapacity = computed(() =>
+  validateAccountCapacity(
+    concurrency.value,
+    enableAffinityConcurrencyReserve.value ? affinityConcurrencyReserve.value : 0,
+    { allowUnlimited: bulkAllowsUnlimitedConcurrency.value }
+  )
+)
+const bulkConcurrencyError = computed<AccountCapacityError | null>(() =>
+  enableConcurrency.value ? bulkCapacity.value.concurrencyError : null
+)
+const bulkAffinityReserveError = computed<AccountCapacityError | null>(() => {
+  if (!enableAffinityConcurrencyReserve.value) return null
+  if (!isNonNegativeInteger(affinityConcurrencyReserve.value)) {
+    return 'reserveNonNegativeInteger'
+  }
+  return enableConcurrency.value ? bulkCapacity.value.reserveError : null
+})
+const capacityErrorText = (error: AccountCapacityError | null) =>
+  error ? t(`admin.accounts.capacityValidation.${error}`) : ''
 const umqModeOptions = computed(() => [
   { value: '', label: t('admin.accounts.quotaControl.rpmLimit.umqModeOff') },
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
@@ -1599,6 +1700,10 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   if (enableConcurrency.value) {
     updates.concurrency = concurrency.value
   }
+  if (enableAffinityConcurrencyReserve.value) {
+    ensureExtra().affinity_concurrency_reserve = affinityConcurrencyReserve.value
+  }
+
 
   if (enableLoadFactor.value) {
     // 空值/NaN/0 时发送 0（后端约定 <= 0 表示清除）
@@ -1812,6 +1917,7 @@ const handleSubmit = async () => {
     enableHeaderOverride.value ||
     enableProxy.value ||
     enableConcurrency.value ||
+    enableAffinityConcurrencyReserve.value ||
     enableLoadFactor.value ||
     enablePriority.value ||
     enableRateMultiplier.value ||
@@ -1829,6 +1935,15 @@ const handleSubmit = async () => {
 
   if (!hasAnyFieldEnabled) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
+    return
+  }
+
+  if (bulkConcurrencyError.value) {
+    appStore.showError(capacityErrorText(bulkConcurrencyError.value))
+    return
+  }
+  if (bulkAffinityReserveError.value) {
+    appStore.showError(capacityErrorText(bulkAffinityReserveError.value))
     return
   }
 
@@ -1941,6 +2056,7 @@ watch(
       enableProxy.value = false
       enableConcurrency.value = false
       enableLoadFactor.value = false
+      enableAffinityConcurrencyReserve.value = false
       enablePriority.value = false
       enableRateMultiplier.value = false
       enableStatus.value = false
@@ -1968,6 +2084,7 @@ watch(
       headerOverrideRows.value = []
       proxyId.value = null
       concurrency.value = 1
+      affinityConcurrencyReserve.value = 0
       loadFactor.value = null
       priority.value = 1
       rateMultiplier.value = 1

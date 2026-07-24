@@ -615,6 +615,7 @@ export interface SystemSettings {
   openai_low_upstream_rate_priority_enabled?: boolean;
   openai_oauth_scheduling_rate_multiplier?: number;
   openai_advanced_scheduler_enabled?: boolean;
+  openai_priority_saturation_enabled?: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled?: boolean;
   openai_advanced_scheduler_subscription_priority_enabled?: boolean;
   openai_advanced_scheduler_lb_top_k?: string;
@@ -897,6 +898,7 @@ export interface UpdateSettingsRequest {
   openai_low_upstream_rate_priority_enabled?: boolean;
   openai_oauth_scheduling_rate_multiplier?: number;
   openai_advanced_scheduler_enabled?: boolean;
+  openai_priority_saturation_enabled?: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled?: boolean;
   openai_advanced_scheduler_subscription_priority_enabled?: boolean;
   openai_advanced_scheduler_lb_top_k?: string;

@@ -256,7 +256,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		imageCount = result.imageCount
 		imageOutputSizes = result.imageOutputSizes
 	}
-	s.bindHTTPResponseAccount(ctx, c, account, responseID)
+	responseAccountBound := s.bindHTTPResponseAccount(ctx, c, account, responseID)
 
 	// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 	if !account.IsShadow() {
@@ -270,17 +270,18 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	forwardResult := &OpenAIForwardResult{
-		RequestID:       resp.Header.Get("x-request-id"),
-		ResponseID:      responseID,
-		Usage:           *usage,
-		Model:           reqModel,
-		UpstreamModel:   upstreamPassthroughModel,
-		ServiceTier:     serviceTier,
-		ReasoningEffort: reasoningEffort,
-		Stream:          reqStream,
-		OpenAIWSMode:    false,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    firstTokenMs,
+		RequestID:            resp.Header.Get("x-request-id"),
+		ResponseID:           responseID,
+		ResponseAccountBound: responseAccountBound,
+		Usage:                *usage,
+		Model:                reqModel,
+		UpstreamModel:        upstreamPassthroughModel,
+		ServiceTier:          serviceTier,
+		ReasoningEffort:      reasoningEffort,
+		Stream:               reqStream,
+		OpenAIWSMode:         false,
+		Duration:             time.Since(startTime),
+		FirstTokenMs:         firstTokenMs,
 	}
 	if imageCount > 0 {
 		forwardResult.ImageCount = imageCount

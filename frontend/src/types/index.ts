@@ -1053,6 +1053,8 @@ export interface Account {
   proxy_fallback_origin_id?: number | null
   proxy_fallback_origin_name?: string | null
   concurrency: number
+  affinity_concurrency_reserve?: number
+  general_concurrency_limit?: number
   load_factor?: number | null
   current_concurrency?: number // Real-time concurrency count from Redis
   scheduler_score?: {
