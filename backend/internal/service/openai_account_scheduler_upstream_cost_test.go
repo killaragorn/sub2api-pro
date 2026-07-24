@@ -14,10 +14,11 @@ import (
 
 type upstreamCostTrackingConcurrencyCache struct {
 	ConcurrencyCache
-	loadMap       map[int64]*AccountLoadInfo
-	acquireLimits map[int64][]int
-	releases      map[int64]int
-	rejectAcquire bool
+	loadMap        map[int64]*AccountLoadInfo
+	acquireLimits  map[int64][]int
+	acquireResults map[int64]bool
+	releases       map[int64]int
+	rejectAcquire  bool
 }
 
 func (c *upstreamCostTrackingConcurrencyCache) AcquireAccountSlot(_ context.Context, accountID int64, maxConcurrency int, _ string) (bool, error) {
@@ -25,6 +26,9 @@ func (c *upstreamCostTrackingConcurrencyCache) AcquireAccountSlot(_ context.Cont
 		c.acquireLimits = make(map[int64][]int)
 	}
 	c.acquireLimits[accountID] = append(c.acquireLimits[accountID], maxConcurrency)
+	if acquired, ok := c.acquireResults[accountID]; ok {
+		return acquired, nil
+	}
 	return !c.rejectAcquire, nil
 }
 
@@ -122,10 +126,13 @@ func TestAdvancedCostSchedulerUsesTopKOverflowWhenPreferredAccountIsKnownFull(t 
 		account.Schedulable = true
 		account.Concurrency = 1
 	}
-	cache := &upstreamCostTrackingConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
-		cheap.ID:     {AccountID: cheap.ID, CurrentConcurrency: 1, LoadRate: 100},
-		expensive.ID: {AccountID: expensive.ID},
-	}}
+	cache := &upstreamCostTrackingConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			cheap.ID:     {AccountID: cheap.ID, CurrentConcurrency: 1, LoadRate: 100},
+			expensive.ID: {AccountID: expensive.ID},
+		},
+		acquireResults: map[int64]bool{cheap.ID: false},
+	}
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.LBTopK = 1
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.UpstreamCost = 1
@@ -140,7 +147,7 @@ func TestAdvancedCostSchedulerUsesTopKOverflowWhenPreferredAccountIsKnownFull(t 
 	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-test", nil, OpenAIUpstreamTransportAny, false)
 	require.NoError(t, err)
 	require.Equal(t, expensive.ID, selection.Account.ID)
-	require.Empty(t, cache.limits(cheap.ID))
+	require.Equal(t, []int{1}, cache.limits(cheap.ID))
 	require.Equal(t, []int{1}, cache.limits(expensive.ID))
 	selection.ReleaseFunc()
 }
@@ -183,22 +190,24 @@ func TestOpenAICostOverflowExpandedOnlyWhenCostAddsCandidates(t *testing.T) {
 	require.False(t, openAICostOverflowExpanded(OpenAIAccountScheduleRequest{}, plan))
 }
 
-func TestAdvancedSchedulerKnownFullOverflowStillFindsAvailableAccount(t *testing.T) {
-	selectionOrder := make([]openAIAccountCandidateScore, 0, openAIAccountSelectionProbeLimit+2)
-	for id := int64(1); id <= openAIAccountSelectionProbeLimit+1; id++ {
+func TestAdvancedSchedulerAtomicRejectedOverflowStillFindsAvailableWithinProbeBudget(t *testing.T) {
+	selectionOrder := make([]openAIAccountCandidateScore, 0, openAIAccountSelectionProbeLimit)
+	acquireResults := make(map[int64]bool, openAIAccountSelectionProbeLimit-1)
+	for id := int64(1); id < openAIAccountSelectionProbeLimit; id++ {
 		account := &Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1}
 		selectionOrder = append(selectionOrder, openAIAccountCandidateScore{
 			account:   account,
 			loadInfo:  &AccountLoadInfo{AccountID: id, CurrentConcurrency: 1, LoadRate: 100},
 			loadKnown: true,
 		})
+		acquireResults[id] = false
 	}
-	availableID := int64(openAIAccountSelectionProbeLimit + 2)
+	availableID := int64(openAIAccountSelectionProbeLimit)
 	available := &Account{ID: availableID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1}
 	selectionOrder = append(selectionOrder, openAIAccountCandidateScore{
 		account: available, loadInfo: &AccountLoadInfo{AccountID: availableID}, loadKnown: true,
 	})
-	cache := &upstreamCostTrackingConcurrencyCache{}
+	cache := &upstreamCostTrackingConcurrencyCache{acquireResults: acquireResults}
 	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{
 		concurrencyService: NewConcurrencyService(cache),
 	}}
@@ -210,7 +219,7 @@ func TestAdvancedSchedulerKnownFullOverflowStillFindsAvailableAccount(t *testing
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.Equal(t, availableID, selection.Account.ID)
-	require.Equal(t, 1, cache.totalAcquires())
+	require.Equal(t, openAIAccountSelectionProbeLimit, cache.totalAcquires())
 	selection.ReleaseFunc()
 }
 
@@ -268,11 +277,14 @@ func TestAdvancedCostSchedulerKeepsCompactSupportedOverflowAheadOfUnknown(t *tes
 		account.Schedulable = true
 		account.Concurrency = 1
 	}
-	cache := &upstreamCostTrackingConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
-		preferred.ID: {AccountID: preferred.ID, CurrentConcurrency: 1, LoadRate: 100},
-		overflow.ID:  {AccountID: overflow.ID},
-		unknown.ID:   {AccountID: unknown.ID},
-	}}
+	cache := &upstreamCostTrackingConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			preferred.ID: {AccountID: preferred.ID, CurrentConcurrency: 1, LoadRate: 100},
+			overflow.ID:  {AccountID: overflow.ID},
+			unknown.ID:   {AccountID: unknown.ID},
+		},
+		acquireResults: map[int64]bool{preferred.ID: false},
+	}
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.LBTopK = 1
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.UpstreamCost = 1
@@ -287,7 +299,7 @@ func TestAdvancedCostSchedulerKeepsCompactSupportedOverflowAheadOfUnknown(t *tes
 	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-test", nil, OpenAIUpstreamTransportAny, true)
 	require.NoError(t, err)
 	require.Equal(t, overflow.ID, selection.Account.ID)
-	require.Empty(t, cache.limits(preferred.ID))
+	require.Equal(t, []int{1}, cache.limits(preferred.ID))
 	require.Equal(t, []int{1}, cache.limits(overflow.ID))
 	require.Empty(t, cache.limits(unknown.ID))
 	selection.ReleaseFunc()
@@ -354,7 +366,7 @@ func TestAdvancedSchedulerReacquiresOnceWhenDBConcurrencyChanges(t *testing.T) {
 	selection.ReleaseFunc()
 }
 
-func TestAdvancedSchedulerKnownFullPoolsDoNotRecheckDB(t *testing.T) {
+func TestAdvancedSchedulerKnownFullPoolsRequireAtomicRejectsWithoutDBRecheck(t *testing.T) {
 	for _, size := range []int{100, 15_000} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			accounts := make(map[int64]*Account, size)
@@ -369,7 +381,7 @@ func TestAdvancedSchedulerKnownFullPoolsDoNotRecheckDB(t *testing.T) {
 				})
 			}
 			repo := &upstreamCostCountingAccountRepo{accounts: accounts}
-			cache := &upstreamCostTrackingConcurrencyCache{}
+			cache := &upstreamCostTrackingConcurrencyCache{rejectAcquire: true}
 			scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{
 				accountRepo:        repo,
 				schedulerSnapshot:  &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{accountsByID: accounts}},
@@ -380,7 +392,7 @@ func TestAdvancedSchedulerKnownFullPoolsDoNotRecheckDB(t *testing.T) {
 			require.NoError(t, err)
 			require.Nil(t, selection)
 			require.Zero(t, repo.calls())
-			require.Zero(t, cache.totalAcquires())
+			require.Equal(t, openAIAccountSelectionProbeLimit, cache.totalAcquires())
 		})
 	}
 }

@@ -128,6 +128,82 @@ func TestCRSSyncOpenAILongContextBilling(t *testing.T) {
 	}
 }
 
+func TestCRSSyncOpenAIRejectsInvalidAffinityConcurrencyReserve(t *testing.T) {
+	tests := []struct {
+		name        string
+		collection  string
+		credentials map[string]any
+		existing    bool
+	}{
+		{
+			name:        "OAuth create rejects source reserve equal to imported concurrency",
+			collection:  "openaiOAuthAccounts",
+			credentials: map[string]any{"access_token": "oauth-token"},
+		},
+		{
+			name:        "API key create rejects source reserve equal to imported concurrency",
+			collection:  "openaiResponsesAccounts",
+			credentials: map[string]any{"api_key": "sk-test"},
+		},
+		{
+			name:        "OAuth update rejects preserved reserve invalidated by imported concurrency",
+			collection:  "openaiOAuthAccounts",
+			credentials: map[string]any{"access_token": "oauth-token"},
+			existing:    true,
+		},
+		{
+			name:        "API key update rejects preserved reserve invalidated by imported concurrency",
+			collection:  "openaiResponsesAccounts",
+			credentials: map[string]any{"api_key": "sk-test"},
+			existing:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const crsID = "crs-openai-1"
+			sourceExtra := map[string]any{AccountExtraAffinityConcurrencyReserve: 3}
+			var existing *Account
+			if tt.existing {
+				accountType := AccountTypeOAuth
+				if tt.collection == "openaiResponsesAccounts" {
+					accountType = AccountTypeAPIKey
+				}
+				existing = &Account{
+					ID:          51,
+					Platform:    PlatformOpenAI,
+					Type:        accountType,
+					Concurrency: 5,
+					Extra: map[string]any{
+						"crs_account_id":                       crsID,
+						AccountExtraAffinityConcurrencyReserve: 3,
+					},
+				}
+				sourceExtra = nil
+			}
+
+			repo := newCRSLongContextAccountRepo(existing)
+			result := runCRSOpenAILongContextSync(t, repo, crsOpenAILongContextSource{
+				collection:  tt.collection,
+				credentials: tt.credentials,
+				extra:       sourceExtra,
+			})
+
+			require.Len(t, result.Items, 1)
+			require.Equal(t, "failed", result.Items[0].Action)
+			require.Contains(t, result.Items[0].Error, "affinity_concurrency_reserve must be less than concurrency")
+			require.Equal(t, 1, result.Failed)
+			require.Zero(t, result.Created)
+			require.Zero(t, result.Updated)
+			if tt.existing {
+				require.Equal(t, 5, repo.accounts[crsID].Concurrency)
+			} else {
+				require.NotContains(t, repo.accounts, crsID)
+			}
+		})
+	}
+}
+
 func runCRSOpenAILongContextSync(t *testing.T, repo AccountRepository, source crsOpenAILongContextSource) *SyncFromCRSResult {
 	t.Helper()
 	account := map[string]any{

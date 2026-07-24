@@ -71,11 +71,12 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 			return
 		}
 		account := selection.Account
-		accountRelease, acquired := h.acquireResponsesAccountSlot(
+		accountRelease, acquired, _ := h.acquireResponsesAccountSlot(
 			c,
 			apiKey.GroupID,
 			"",
 			selection,
+			false,
 			false,
 			&streamStarted,
 			reqLog,

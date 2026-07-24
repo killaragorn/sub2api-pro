@@ -283,7 +283,7 @@ func (s *OpenAIGatewayService) ConvergeStickySession(
 	sessionHash string,
 	accountID int64,
 ) error {
-	_, _, err := s.convergeStickySession(ctx, groupID, sessionHash, accountID)
+	_, _, _, _, err := s.convergeStickySession(ctx, groupID, sessionHash, accountID, false)
 	return err
 }
 
@@ -292,28 +292,53 @@ func (s *OpenAIGatewayService) convergeStickySession(
 	groupID *int64,
 	sessionHash string,
 	accountID int64,
-) (claimed bool, previousOwnerID int64, err error) {
+	guardRollback bool,
+) (claimed bool, previousOwnerID int64, rollbackToken string, legacyClaimed bool, err error) {
 	sessionHash = strings.TrimSpace(sessionHash)
 	if s == nil || sessionHash == "" || accountID <= 0 {
-		return false, 0, nil
+		return false, 0, "", false, nil
 	}
 	for range openAIStickyOwnerReconcileAttempts {
-		ownerID, claimed, err := s.ClaimStickySession(ctx, groupID, sessionHash, accountID)
+		var ownerID int64
+		var claimToken string
+		var claimLegacy bool
+		if guardRollback {
+			ownerID, claimed, claimToken, claimLegacy, err = s.claimStickySessionForSelection(
+				ctx,
+				groupID,
+				sessionHash,
+				accountID,
+			)
+		} else {
+			ownerID, claimed, err = s.ClaimStickySession(ctx, groupID, sessionHash, accountID)
+		}
 		if err != nil {
-			return false, 0, err
+			return false, 0, "", false, err
 		}
 		if ownerID == accountID {
-			return claimed, 0, nil
+			return claimed, 0, claimToken, claimLegacy, nil
 		}
-		swapped, err := s.MigrateStickySession(ctx, groupID, sessionHash, ownerID, accountID)
+		var swapToken string
+		var swapped bool
+		if guardRollback {
+			swapped, swapToken, err = s.migrateStickySessionForSelection(
+				ctx,
+				groupID,
+				sessionHash,
+				ownerID,
+				accountID,
+			)
+		} else {
+			swapped, err = s.MigrateStickySession(ctx, groupID, sessionHash, ownerID, accountID)
+		}
 		if err != nil {
-			return false, 0, err
+			return false, 0, "", false, err
 		}
 		if swapped {
-			return false, ownerID, nil
+			return false, ownerID, swapToken, false, nil
 		}
 	}
-	return false, 0, fmt.Errorf("sticky session owner changed too frequently")
+	return false, 0, "", false, fmt.Errorf("sticky session owner changed too frequently")
 }
 
 // FinalizeAcquiredOpenAISelection is called after a handler has acquired a
@@ -342,13 +367,54 @@ func (s *OpenAIGatewayService) FinalizeAcquiredOpenAISelection(
 		}
 	}
 	if selection.WaitPlan != nil {
+		staleAccountID := selection.Account.ID
 		var err error
-		selection, err = s.revalidateAcquiredOpenAIWaitSelection(ctx, req, selection)
+		var becameIneligible bool
+		selection, becameIneligible, err = s.revalidateAcquiredOpenAIWaitSelection(ctx, req, selection)
+		if becameIneligible {
+			return s.rescheduleOpenAISelectionAfterStaleWait(ctx, req, staleAccountID)
+		}
 		if err != nil || selection == nil || !selection.Acquired {
 			return selection, err
 		}
 	}
 	return s.settleAcquiredOpenAISelection(ctx, req, selection)
+}
+
+func (s *OpenAIGatewayService) rescheduleOpenAISelectionAfterStaleWait(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	staleAccountID int64,
+) (*AccountSelectionResult, error) {
+	excludedIDs := cloneExcludedAccountIDs(req.ExcludedIDs)
+	if excludedIDs == nil {
+		excludedIDs = make(map[int64]struct{})
+	}
+	// A stale general/overflow target must not be selected again from an old
+	// snapshot. A stale session owner is different: leaving it unexcluded lets
+	// routeOpenAIAffinity recognize permanent ineligibility and CAS-migrate the
+	// canonical owner instead of treating this as a request-scoped failover.
+	if staleAccountID > 0 && staleAccountID != req.StickyAccountID {
+		excludedIDs[staleAccountID] = struct{}{}
+	}
+
+	selection, _, err := s.selectAccountWithScheduler(
+		ctx,
+		req.GroupID,
+		req.PreviousResponseID,
+		req.SessionHash,
+		req.RequestedModel,
+		excludedIDs,
+		req.RequiredTransport,
+		req.RequiredCapability,
+		req.RequiredImageCapability,
+		req.RequireCompact,
+		req.Platform,
+		req.PreviousResponseCanMove,
+		req.CanTemporarilyOverflow,
+		req.UseUpstreamTokenCost,
+	)
+	return selection, err
 }
 
 // revalidateAcquiredOpenAIWaitSelection closes the stale-plan window between
@@ -358,9 +424,9 @@ func (s *OpenAIGatewayService) revalidateAcquiredOpenAIWaitSelection(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 	selection *AccountSelectionResult,
-) (*AccountSelectionResult, error) {
+) (*AccountSelectionResult, bool, error) {
 	if s == nil || selection == nil || !selection.Acquired || selection.Account == nil || selection.WaitPlan == nil {
-		return selection, nil
+		return selection, false, nil
 	}
 
 	plan := *selection.WaitPlan
@@ -369,7 +435,7 @@ func (s *OpenAIGatewayService) revalidateAcquiredOpenAIWaitSelection(
 		fresh = (&defaultOpenAIAccountScheduler{service: s}).freshEligibleAccount(ctx, req, selection.Account.ID)
 		if fresh == nil {
 			releaseOpenAISelection(selection)
-			return nil, noAvailableOpenAISelectionError(req.RequestedModel, false, "wait_target_became_ineligible")
+			return nil, true, nil
 		}
 	}
 
@@ -383,19 +449,19 @@ func (s *OpenAIGatewayService) revalidateAcquiredOpenAIWaitSelection(
 
 	if plan.MaxConcurrency == freshLimit {
 		selection.WaitPlan = nil
-		return selection, nil
+		return selection, false, nil
 	}
 
 	releaseOpenAISelection(selection)
 	result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, freshLimit)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if result != nil && result.Acquired {
 		selection.Acquired = true
 		selection.ReleaseFunc = result.ReleaseFunc
 		selection.WaitPlan = nil
-		return selection, nil
+		return selection, false, nil
 	}
 
 	selection.WaitPlan = &AccountWaitPlan{
@@ -404,7 +470,7 @@ func (s *OpenAIGatewayService) revalidateAcquiredOpenAIWaitSelection(
 		Timeout:        plan.Timeout,
 		MaxWaiting:     plan.MaxWaiting,
 	}
-	return selection, nil
+	return selection, false, nil
 }
 
 // FinalizeOpenAIResponseAffinity converges a temporary overflow only after the
@@ -480,7 +546,13 @@ func (s *OpenAIGatewayService) settleAcquiredOpenAISelection(
 
 	selectedID := selection.Account.ID
 	if selection.convergeStickyBinding {
-		claimed, previousOwnerID, err := s.convergeStickySession(ctx, req.GroupID, sessionHash, selectedID)
+		claimed, previousOwnerID, rollbackToken, legacyClaimed, err := s.convergeStickySession(
+			ctx,
+			req.GroupID,
+			sessionHash,
+			selectedID,
+			true,
+		)
 		if err != nil {
 			releaseOpenAISelection(selection)
 			return nil, err
@@ -489,6 +561,10 @@ func (s *OpenAIGatewayService) settleAcquiredOpenAISelection(
 		if previousOwnerID > 0 {
 			selection.stickyBindingPreviousOwnerID = previousOwnerID
 		}
+		if rollbackToken != "" {
+			selection.stickyBindingRollbackToken = rollbackToken
+		}
+		selection.stickyBindingLegacyClaimed = selection.stickyBindingLegacyClaimed || legacyClaimed
 		selection.SessionOwnerID = selectedID
 		selection.PreserveStickyBinding = false
 		return selection, nil
@@ -508,13 +584,22 @@ func (s *OpenAIGatewayService) settleAcquiredOpenAISelection(
 		return selection, nil
 	}
 
-	ownerID, claimed, err := s.ClaimStickySession(ctx, req.GroupID, sessionHash, selectedID)
+	ownerID, claimed, rollbackToken, legacyClaimed, err := s.claimStickySessionForSelection(
+		ctx,
+		req.GroupID,
+		sessionHash,
+		selectedID,
+	)
 	if err != nil {
 		releaseOpenAISelection(selection)
 		return nil, err
 	}
 	if ownerID <= 0 || ownerID == selectedID {
 		selection.stickyBindingClaimed = selection.stickyBindingClaimed || claimed
+		if rollbackToken != "" {
+			selection.stickyBindingRollbackToken = rollbackToken
+		}
+		selection.stickyBindingLegacyClaimed = selection.stickyBindingLegacyClaimed || legacyClaimed
 		selection.SessionOwnerID = selectedID
 		return selection, nil
 	}
@@ -556,23 +641,41 @@ func (s *OpenAIGatewayService) followCanonicalStickyOwner(
 		ownerReq.PreserveStickyBinding = false
 		owner := base.freshEligibleAccount(ctx, ownerReq, ownerID)
 		if owner == nil {
-			swapped, err := s.MigrateStickySession(ctx, req.GroupID, req.SessionHash, ownerID, selectedID)
+			swapped, rollbackToken, err := s.migrateStickySessionForSelection(
+				ctx,
+				req.GroupID,
+				req.SessionHash,
+				ownerID,
+				selectedID,
+			)
 			if err != nil {
 				releaseOpenAISelection(provisional)
 				return nil, err
 			}
 			if swapped {
 				provisional.stickyBindingPreviousOwnerID = ownerID
+				provisional.stickyBindingRollbackToken = rollbackToken
 				provisional.SessionOwnerID = selectedID
 				return attachOpenAISelectionRequest(provisional, req), nil
 			}
 			var claimed bool
-			ownerID, claimed, err = s.ClaimStickySession(ctx, req.GroupID, req.SessionHash, selectedID)
+			var claimToken string
+			var legacyClaimed bool
+			ownerID, claimed, claimToken, legacyClaimed, err = s.claimStickySessionForSelection(
+				ctx,
+				req.GroupID,
+				req.SessionHash,
+				selectedID,
+			)
 			if err != nil {
 				releaseOpenAISelection(provisional)
 				return nil, err
 			}
 			provisional.stickyBindingClaimed = provisional.stickyBindingClaimed || claimed
+			if claimToken != "" {
+				provisional.stickyBindingRollbackToken = claimToken
+			}
+			provisional.stickyBindingLegacyClaimed = legacyClaimed
 			continue
 		}
 
@@ -596,18 +699,25 @@ func (s *OpenAIGatewayService) followCanonicalStickyOwner(
 			}, ownerReq), nil
 		}
 
-		actualOwnerID, claimed, claimErr := s.ClaimStickySession(ctx, req.GroupID, req.SessionHash, owner.ID)
+		actualOwnerID, claimed, rollbackToken, legacyClaimed, claimErr := s.claimStickySessionForSelection(
+			ctx,
+			req.GroupID,
+			req.SessionHash,
+			owner.ID,
+		)
 		if claimErr != nil {
 			result.ReleaseFunc()
 			return nil, claimErr
 		}
 		if actualOwnerID == owner.ID {
 			return attachOpenAISelectionRequest(&AccountSelectionResult{
-				Account:              owner,
-				Acquired:             true,
-				ReleaseFunc:          result.ReleaseFunc,
-				SessionOwnerID:       owner.ID,
-				stickyBindingClaimed: claimed,
+				Account:                    owner,
+				Acquired:                   true,
+				ReleaseFunc:                result.ReleaseFunc,
+				SessionOwnerID:             owner.ID,
+				stickyBindingClaimed:       claimed,
+				stickyBindingRollbackToken: rollbackToken,
+				stickyBindingLegacyClaimed: legacyClaimed,
 			}, ownerReq), nil
 		}
 		provisional = &AccountSelectionResult{
@@ -650,8 +760,27 @@ func (s *OpenAIGatewayService) RejectAcquiredOpenAISelection(
 	wasAcquired := selection.Acquired
 	claimed := selection.stickyBindingClaimed
 	previousOwnerID := selection.stickyBindingPreviousOwnerID
+	rollbackToken := selection.stickyBindingRollbackToken
+	legacyClaimed := selection.stickyBindingLegacyClaimed
+	selection.stickyBindingRollbackToken = ""
+	selection.stickyBindingLegacyClaimed = false
 	releaseOpenAISelection(selection)
 	if !wasAcquired || accountID <= 0 || strings.TrimSpace(sessionHash) == "" {
+		return nil
+	}
+	if rollbackToken != "" {
+		_, err := s.rollbackStickySessionForSelection(
+			ctx,
+			groupID,
+			sessionHash,
+			accountID,
+			previousOwnerID,
+			rollbackToken,
+			legacyClaimed,
+		)
+		return err
+	}
+	if _, supportsGuardedRollback := s.cache.(OpenAISessionOwnerRollbackCache); supportsGuardedRollback {
 		return nil
 	}
 	if claimed {

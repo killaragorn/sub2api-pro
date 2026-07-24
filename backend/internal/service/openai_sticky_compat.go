@@ -203,6 +203,58 @@ func (s *OpenAIGatewayService) claimStickySessionAccountID(ctx context.Context, 
 	return ownerID, claimed, nil
 }
 
+func (s *OpenAIGatewayService) claimStickySessionAccountIDWithRollbackToken(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	accountID int64,
+	ttl time.Duration,
+	rollbackToken string,
+) (ownerID int64, claimed bool, guarded bool, legacyClaimed bool, err error) {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return accountID, false, false, false, nil
+	}
+	primaryKey := s.openAISessionCacheKey(sessionHash)
+	if primaryKey == "" {
+		return accountID, false, false, false, nil
+	}
+
+	ownerID, claimed, guarded, err = claimSessionOwnerWithRollbackToken(
+		ctx,
+		s.cache,
+		derefGroupID(groupID),
+		primaryKey,
+		accountID,
+		ttl,
+		rollbackToken,
+	)
+	if err != nil {
+		return 0, false, false, false, err
+	}
+	if !s.openAISessionHashDualWriteOldEnabled() {
+		return ownerID, claimed, guarded, false, nil
+	}
+
+	legacyKey := s.openAILegacySessionCacheKey(ctx, sessionHash)
+	if legacyKey == "" {
+		return ownerID, claimed, guarded, false, nil
+	}
+	legacyOwnerID, legacyClaimed, legacyErr := claimSessionOwner(
+		ctx,
+		s.cache,
+		derefGroupID(groupID),
+		legacyKey,
+		ownerID,
+		s.openAIStickyLegacyTTL(ttl),
+	)
+	if legacyErr != nil {
+		openAIStickyLegacyDualWriteError.Add(1)
+		return ownerID, claimed, guarded, false, nil
+	}
+	openAIStickyLegacyDualWriteTotal.Add(1)
+	return ownerID, claimed, guarded, legacyClaimed && legacyOwnerID == ownerID, nil
+}
+
 func (s *OpenAIGatewayService) refreshStickySessionTTL(ctx context.Context, groupID *int64, sessionHash string, accountID int64, ttl time.Duration) error {
 	if s == nil || s.cache == nil || accountID <= 0 {
 		return nil

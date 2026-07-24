@@ -375,7 +375,7 @@ func TestOpenAIGatewayService_RejectAcquiredOpenAISelection(t *testing.T) {
 	groupID := int64(4202)
 
 	t.Run("releases slot and removes matching owner before reclaim", func(t *testing.T) {
-		cache := &stubGatewayCache{}
+		cache := &rollbackAwareGatewayCache{}
 		svc := &OpenAIGatewayService{cache: cache}
 
 		releaseCount := 0
@@ -403,7 +403,7 @@ func TestOpenAIGatewayService_RejectAcquiredOpenAISelection(t *testing.T) {
 	})
 
 	t.Run("keeps a matching owner that predates the acquired selection", func(t *testing.T) {
-		cache := &stubGatewayCache{}
+		cache := &rollbackAwareGatewayCache{}
 		svc := &OpenAIGatewayService{cache: cache}
 		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-existing", 37015)
 		require.NoError(t, err)
@@ -434,7 +434,7 @@ func TestOpenAIGatewayService_RejectAcquiredOpenAISelection(t *testing.T) {
 	})
 
 	t.Run("keeps a matching owner for an unacquired wait plan", func(t *testing.T) {
-		cache := &stubGatewayCache{}
+		cache := &rollbackAwareGatewayCache{}
 		svc := &OpenAIGatewayService{cache: cache}
 		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-wait", 37017)
 		require.NoError(t, err)
@@ -455,7 +455,7 @@ func TestOpenAIGatewayService_RejectAcquiredOpenAISelection(t *testing.T) {
 	})
 
 	t.Run("does not delete a different canonical owner", func(t *testing.T) {
-		cache := &stubGatewayCache{}
+		cache := &rollbackAwareGatewayCache{}
 		svc := &OpenAIGatewayService{cache: cache}
 		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-overflow", 37021)
 		require.NoError(t, err)
@@ -477,26 +477,232 @@ func TestOpenAIGatewayService_RejectAcquiredOpenAISelection(t *testing.T) {
 	})
 
 	t.Run("restores the previous owner after rejecting a migrated selection", func(t *testing.T) {
-		cache := &stubGatewayCache{}
+		cache := &rollbackAwareGatewayCache{}
 		svc := &OpenAIGatewayService{cache: cache}
 		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-migrated", 37031)
 		require.NoError(t, err)
-		swapped, err := svc.MigrateStickySession(ctx, &groupID, "grok-media-migrated", 37031, 37032)
-		require.NoError(t, err)
-		require.True(t, swapped)
 
-		selection := &AccountSelectionResult{
-			Account:                      &Account{ID: 37032},
-			Acquired:                     true,
-			ReleaseFunc:                  func() {},
-			stickyBindingPreviousOwnerID: 37031,
-		}
+		selection := markOpenAISelectionForStickyConvergence(&AccountSelectionResult{
+			Account:     &Account{ID: 37032},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		selection, err = svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: "grok-media-migrated",
+		}, selection)
+		require.NoError(t, err)
+		require.Equal(t, int64(37031), selection.stickyBindingPreviousOwnerID)
+		require.NotEmpty(t, selection.stickyBindingRollbackToken)
+
 		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, "grok-media-migrated", selection))
 
 		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-migrated", 37033)
 		require.NoError(t, err)
 		require.False(t, claimed)
 		require.Equal(t, int64(37031), ownerID)
+	})
+
+	t.Run("keeps a newly claimed owner after another request consumes it", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		selection := &AccountSelectionResult{
+			Account:     &Account{ID: 37041},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		}
+		selection, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: "grok-media-consumed-claim",
+		}, selection)
+		require.NoError(t, err)
+		require.NotEmpty(t, selection.stickyBindingRollbackToken)
+
+		ownerID, claimed, err := svc.ClaimStickySession(
+			ctx,
+			&groupID,
+			"grok-media-consumed-claim",
+			37041,
+		)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37041), ownerID)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(
+			ctx,
+			&groupID,
+			"grok-media-consumed-claim",
+			selection,
+		))
+		ownerID, claimed, err = svc.ClaimStickySession(ctx, &groupID, "grok-media-consumed-claim", 37042)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37041), ownerID)
+	})
+
+	t.Run("keeps a migrated owner after another request consumes it", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		_, _, err := svc.ClaimStickySession(ctx, &groupID, "grok-media-consumed-migration", 37051)
+		require.NoError(t, err)
+
+		selection := markOpenAISelectionForStickyConvergence(&AccountSelectionResult{
+			Account:     &Account{ID: 37052},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		selection, err = svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: "grok-media-consumed-migration",
+		}, selection)
+		require.NoError(t, err)
+		require.NotEmpty(t, selection.stickyBindingRollbackToken)
+
+		ownerID, claimed, err := svc.ClaimStickySession(
+			ctx,
+			&groupID,
+			"grok-media-consumed-migration",
+			37052,
+		)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37052), ownerID)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(
+			ctx,
+			&groupID,
+			"grok-media-consumed-migration",
+			selection,
+		))
+		ownerID, claimed, err = svc.ClaimStickySession(ctx, &groupID, "grok-media-consumed-migration", 37053)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37052), ownerID)
+	})
+
+	t.Run("two provisional consumers can both reject a new owner", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		const sessionHash = "grok-media-provisional-consumers"
+
+		first, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: sessionHash,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: 37061},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, first.stickyBindingRollbackToken)
+
+		second, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:         &groupID,
+			SessionHash:     sessionHash,
+			StickyAccountID: 37061,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: 37061},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.Empty(t, second.stickyBindingRollbackToken)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, sessionHash, second))
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, sessionHash, first))
+
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, sessionHash, 37062)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.Equal(t, int64(37062), ownerID)
+	})
+
+	t.Run("confirmed provisional consumer protects the shared owner", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		const sessionHash = "grok-media-confirmed-consumer"
+
+		first, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: sessionHash,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: 37071},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, first.stickyBindingRollbackToken)
+
+		second, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:         &groupID,
+			SessionHash:     sessionHash,
+			StickyAccountID: 37071,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: 37071},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.NoError(t, svc.ConfirmAcquiredOpenAISelection(ctx, &groupID, sessionHash, second))
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, sessionHash, first))
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, sessionHash, second))
+		ownerID, claimed, err := svc.ClaimStickySession(ctx, &groupID, sessionHash, 37072)
+		require.NoError(t, err)
+		require.False(t, claimed)
+		require.Equal(t, int64(37071), ownerID)
+	})
+
+	t.Run("repeated settlement preserves the original rollback token", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		const sessionHash = "grok-media-repeat-settlement"
+
+		selection, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: sessionHash,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: 37081},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		token := selection.stickyBindingRollbackToken
+		require.NotEmpty(t, token)
+
+		selection, err = svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:         &groupID,
+			SessionHash:     sessionHash,
+			StickyAccountID: 37081,
+		}, selection)
+		require.NoError(t, err)
+		require.Equal(t, token, selection.stickyBindingRollbackToken)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, sessionHash, selection))
+		_, exists := cache.sessionBindings["openai:"+sessionHash]
+		require.False(t, exists)
+	})
+
+	t.Run("legacy cache implementations retain best effort rollback", func(t *testing.T) {
+		cache := &stubGatewayCache{}
+		svc := &OpenAIGatewayService{cache: cache}
+		const sessionHash = "grok-media-legacy-cache"
+
+		selection, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			GroupID:     &groupID,
+			SessionHash: sessionHash,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: 37091},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.True(t, selection.stickyBindingClaimed)
+		require.Empty(t, selection.stickyBindingRollbackToken)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, &groupID, sessionHash, selection))
+		_, exists := cache.sessionBindings["openai:"+sessionHash]
+		require.False(t, exists)
 	})
 }
 
@@ -716,6 +922,11 @@ type stubGatewayCache struct {
 	deletedSessions map[string]int
 }
 
+type rollbackAwareGatewayCache struct {
+	stubGatewayCache
+	rollbackGuards map[string]string
+}
+
 type claimRaceGatewayCache struct {
 	stubGatewayCache
 	racingKey string
@@ -767,6 +978,141 @@ func (c *stubGatewayCache) DeleteSessionAccountID(ctx context.Context, groupID i
 	c.deletedSessions[sessionHash]++
 	delete(c.sessionBindings, sessionHash)
 	return nil
+}
+
+func (c *rollbackAwareGatewayCache) ensureRollbackState() {
+	if c.sessionBindings == nil {
+		c.sessionBindings = make(map[string]int64)
+	}
+	if c.rollbackGuards == nil {
+		c.rollbackGuards = make(map[string]string)
+	}
+}
+
+func (c *rollbackAwareGatewayCache) ClaimSessionAccount(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	accountID int64,
+	_ time.Duration,
+) (int64, bool, error) {
+	c.ensureRollbackState()
+	if ownerID := c.sessionBindings[sessionHash]; ownerID > 0 {
+		delete(c.rollbackGuards, sessionHash)
+		return ownerID, false, nil
+	}
+	c.sessionBindings[sessionHash] = accountID
+	delete(c.rollbackGuards, sessionHash)
+	return accountID, true, nil
+}
+
+func (c *rollbackAwareGatewayCache) ClaimSessionAccountWithRollbackToken(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	accountID int64,
+	_ time.Duration,
+	rollbackToken string,
+) (int64, bool, error) {
+	c.ensureRollbackState()
+	if ownerID := c.sessionBindings[sessionHash]; ownerID > 0 {
+		return ownerID, false, nil
+	}
+	c.sessionBindings[sessionHash] = accountID
+	c.rollbackGuards[sessionHash] = rollbackToken
+	return accountID, true, nil
+}
+
+func (c *rollbackAwareGatewayCache) CompareAndSwapSessionAccount(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	oldAccountID int64,
+	newAccountID int64,
+	_ time.Duration,
+) (bool, error) {
+	c.ensureRollbackState()
+	if c.sessionBindings[sessionHash] != oldAccountID {
+		if c.sessionBindings[sessionHash] > 0 {
+			delete(c.rollbackGuards, sessionHash)
+		}
+		return false, nil
+	}
+	c.sessionBindings[sessionHash] = newAccountID
+	delete(c.rollbackGuards, sessionHash)
+	return true, nil
+}
+
+func (c *rollbackAwareGatewayCache) CompareAndSwapSessionAccountWithRollbackToken(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	oldAccountID int64,
+	newAccountID int64,
+	_ time.Duration,
+	rollbackToken string,
+) (bool, error) {
+	c.ensureRollbackState()
+	if c.sessionBindings[sessionHash] != oldAccountID {
+		return false, nil
+	}
+	c.sessionBindings[sessionHash] = newAccountID
+	c.rollbackGuards[sessionHash] = rollbackToken
+	return true, nil
+}
+
+func (c *rollbackAwareGatewayCache) RefreshSessionTTLIfOwner(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	accountID int64,
+	_ time.Duration,
+) (bool, error) {
+	c.ensureRollbackState()
+	if c.sessionBindings[sessionHash] != accountID {
+		return false, nil
+	}
+	delete(c.rollbackGuards, sessionHash)
+	return true, nil
+}
+
+func (c *rollbackAwareGatewayCache) DeleteSessionAccountIfOwner(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	accountID int64,
+) (bool, error) {
+	c.ensureRollbackState()
+	if c.sessionBindings[sessionHash] != accountID {
+		delete(c.rollbackGuards, sessionHash)
+		return false, nil
+	}
+	delete(c.sessionBindings, sessionHash)
+	delete(c.rollbackGuards, sessionHash)
+	return true, nil
+}
+
+func (c *rollbackAwareGatewayCache) RollbackSessionAccount(
+	_ context.Context,
+	_ int64,
+	sessionHash string,
+	currentAccountID int64,
+	previousAccountID int64,
+	_ time.Duration,
+	rollbackToken string,
+) (bool, error) {
+	c.ensureRollbackState()
+	if c.sessionBindings[sessionHash] != currentAccountID ||
+		c.rollbackGuards[sessionHash] != rollbackToken {
+		return false, nil
+	}
+	if previousAccountID > 0 {
+		c.sessionBindings[sessionHash] = previousAccountID
+	} else {
+		delete(c.sessionBindings, sessionHash)
+	}
+	delete(c.rollbackGuards, sessionHash)
+	return true, nil
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulable(t *testing.T) {
@@ -1388,6 +1734,7 @@ func TestOpenAISelectAccountWithLoadAwareness_AllFullWaitPlan(t *testing.T) {
 		loadMap: map[int64]*AccountLoadInfo{
 			1: {AccountID: 1, LoadRate: 100},
 		},
+		acquireResults: map[int64]bool{1: false},
 	}
 
 	svc := &OpenAIGatewayService{

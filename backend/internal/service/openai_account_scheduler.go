@@ -1126,11 +1126,6 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 		affinity := candidate.account.ID == req.StickyAccountID ||
 			candidate.account.ID == req.StickyPreviousAccountID
 		limit := candidate.account.ConcurrencyLimitForAffinity(affinity)
-		if candidate.loadKnown && limit > 0 &&
-			candidate.loadInfo.CurrentConcurrency >= limit {
-			recordOpenAIGeneralReject(req, candidate.account.ID, affinity)
-			continue
-		}
 
 		result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, candidate.account.ID, limit, budget)
 		if !attempted {

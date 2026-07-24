@@ -186,11 +186,12 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	account := selection.Account
 	setOpsSelectedAccount(c, account.ID, account.Platform)
 	streamStarted := false
-	accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(
+	accountReleaseFunc, acquired, _ := h.acquireResponsesAccountSlot(
 		c,
 		apiKey.GroupID,
 		sessionHash,
 		selection,
+		false,
 		false,
 		&streamStarted,
 		reqLog,

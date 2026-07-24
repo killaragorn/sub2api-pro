@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -95,15 +96,17 @@ func TestFinalizeAcquiredOpenAISelection_RevalidatesWaitPlanCapacity(t *testing.
 	require.Equal(t, 1, concurrencyCache.releaseCount)
 }
 
-func TestFinalizeAcquiredOpenAISelection_RejectsWaitTargetThatBecameIneligible(t *testing.T) {
+func TestFinalizeAcquiredOpenAISelection_ReschedulesAfterWaitTargetBecameIneligible(t *testing.T) {
 	const accountID = int64(48002)
 	stale := openAIWaitRecheckAccount(accountID, 4, 1)
-	fresh := stale
-	fresh.Schedulable = false
+	ineligible := stale
+	ineligible.Schedulable = false
+	fallback := openAIWaitRecheckAccount(48003, 3, 1)
 	concurrencyCache := &openAIWaitRecheckConcurrencyCache{acquireResult: true}
 	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{fresh}},
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{ineligible, fallback}},
 		cache:              &stubGatewayCache{},
+		cfg:                &config.Config{},
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
 
@@ -131,8 +134,82 @@ func TestFinalizeAcquiredOpenAISelection_RejectsWaitTargetThatBecameIneligible(t
 		selection,
 	)
 
-	require.ErrorContains(t, err, "wait_target_became_ineligible")
-	require.Nil(t, finalized)
+	require.NoError(t, err)
+	require.NotNil(t, finalized)
+	require.True(t, finalized.Acquired)
+	require.NotNil(t, finalized.Account)
+	require.Equal(t, fallback.ID, finalized.Account.ID)
 	require.Equal(t, 1, initialReleaseCount)
-	require.Empty(t, concurrencyCache.acquireLimits)
+	require.Equal(t, []int{fallback.GeneralConcurrencyLimit()}, concurrencyCache.acquireLimits)
+
+	finalized.ReleaseFunc()
+	require.Equal(t, 1, concurrencyCache.releaseCount)
+}
+
+func TestFinalizeAcquiredOpenAISelection_MigratesIneligibleWaitOwner(t *testing.T) {
+	const (
+		ownerID    = int64(48004)
+		fallbackID = int64(48005)
+	)
+	staleOwner := openAIWaitRecheckAccount(ownerID, 4, 1)
+	ineligibleOwner := staleOwner
+	ineligibleOwner.Schedulable = false
+	fallback := openAIWaitRecheckAccount(fallbackID, 3, 1)
+	sessionHash := "wait-owner-ineligible"
+	sessionCache := &prioritySaturationSessionCache{
+		schedulerTestGatewayCache: schedulerTestGatewayCache{
+			sessionBindings: map[string]int64{"openai:" + sessionHash: ownerID},
+		},
+	}
+	concurrencyCache := &openAIWaitRecheckConcurrencyCache{acquireResult: true}
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{
+			accounts: []Account{ineligibleOwner, fallback},
+		},
+		cache:              sessionCache,
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	initialReleaseCount := 0
+	req := OpenAIAccountScheduleRequest{
+		Platform:               PlatformOpenAI,
+		SessionHash:            sessionHash,
+		StickyAccountID:        ownerID,
+		CanTemporarilyOverflow: true,
+	}
+	selection := attachOpenAISelectionRequest(&AccountSelectionResult{
+		Account:        &staleOwner,
+		Acquired:       true,
+		ReleaseFunc:    func() { initialReleaseCount++ },
+		SessionOwnerID: ownerID,
+		WaitPlan: &AccountWaitPlan{
+			AccountID:      ownerID,
+			MaxConcurrency: staleOwner.ConcurrencyLimitForAffinity(true),
+			Timeout:        time.Second,
+			MaxWaiting:     2,
+		},
+	}, req)
+
+	finalized, err := svc.FinalizeAcquiredOpenAISelection(
+		context.Background(),
+		nil,
+		sessionHash,
+		selection,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, finalized)
+	require.True(t, finalized.Acquired)
+	require.Equal(t, fallbackID, finalized.Account.ID)
+	require.Equal(t, fallbackID, finalized.SessionOwnerID)
+	require.False(t, finalized.PreserveStickyBinding)
+	require.Equal(t, 1, initialReleaseCount)
+
+	sessionCache.mu.Lock()
+	require.Equal(t, fallbackID, sessionCache.sessionBindings["openai:"+sessionHash])
+	sessionCache.mu.Unlock()
+
+	finalized.ReleaseFunc()
+	require.Equal(t, 1, concurrencyCache.releaseCount)
 }

@@ -165,3 +165,65 @@ func TestEnsureGrokMediaAccountEligibility(t *testing.T) {
 		require.Equal(t, "billing_unobserved", reason)
 	})
 }
+
+func TestEnsureFinalGrokMediaSelectionEligibility(t *testing.T) {
+	t.Run("direct selection already checked does not probe twice", func(t *testing.T) {
+		prober := &grokMediaEligibilityProberStub{eligible: true, reason: "eligible"}
+		h := &OpenAIGatewayHandler{grokMediaEligibilityProber: prober}
+		selection := &service.AccountSelectionResult{
+			Account: &service.Account{ID: 21, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth},
+		}
+
+		eligible, reason, err := h.ensureFinalGrokMediaSelectionEligibility(
+			context.Background(),
+			selection,
+			21,
+			false,
+		)
+
+		require.NoError(t, err)
+		require.True(t, eligible)
+		require.Equal(t, "already_checked", reason)
+		require.Zero(t, prober.calls)
+	})
+
+	t.Run("same account is rechecked after a wait plan", func(t *testing.T) {
+		prober := &grokMediaEligibilityProberStub{reason: "billing_free_tier"}
+		h := &OpenAIGatewayHandler{grokMediaEligibilityProber: prober}
+		selection := &service.AccountSelectionResult{
+			Account: &service.Account{ID: 22, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth},
+		}
+
+		eligible, reason, err := h.ensureFinalGrokMediaSelectionEligibility(
+			context.Background(),
+			selection,
+			22,
+			true,
+		)
+
+		require.NoError(t, err)
+		require.False(t, eligible)
+		require.Equal(t, "billing_free_tier", reason)
+		require.Equal(t, 1, prober.calls)
+	})
+
+	t.Run("replacement account is checked before forwarding", func(t *testing.T) {
+		prober := &grokMediaEligibilityProberStub{eligible: true, reason: "eligible"}
+		h := &OpenAIGatewayHandler{grokMediaEligibilityProber: prober}
+		selection := &service.AccountSelectionResult{
+			Account: &service.Account{ID: 24, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth},
+		}
+
+		eligible, reason, err := h.ensureFinalGrokMediaSelectionEligibility(
+			context.Background(),
+			selection,
+			23,
+			false,
+		)
+
+		require.NoError(t, err)
+		require.True(t, eligible)
+		require.Equal(t, "eligible", reason)
+		require.Equal(t, 1, prober.calls)
+	})
+}

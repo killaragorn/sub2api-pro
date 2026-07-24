@@ -134,6 +134,67 @@ func TestClaimStickySessionAccountID_LegacyDualWriteFailureKeepsCanonicalClaim(t
 	require.Equal(t, before.SessionHashLegacyDualWriteTotal, after.SessionHashLegacyDualWriteTotal)
 }
 
+func TestRejectAcquiredOpenAISelection_RollsBackOnlyOwnedLegacyWrite(t *testing.T) {
+	const (
+		primaryHash = "new-hash"
+		legacyHash  = "legacy-hash"
+		accountID   = int64(29)
+	)
+	ctx := withOpenAILegacySessionHash(context.Background(), legacyHash)
+	newService := func(cache *rollbackAwareGatewayCache) *OpenAIGatewayService {
+		return &OpenAIGatewayService{
+			cache: cache,
+			cfg: &config.Config{
+				Gateway: config.GatewayConfig{
+					OpenAIWS: config.GatewayOpenAIWSConfig{
+						SessionHashDualWriteOld: true,
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("removes a legacy key created by the provisional claim", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{}
+		svc := newService(cache)
+		selection, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			SessionHash: primaryHash,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: accountID},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.True(t, selection.stickyBindingLegacyClaimed)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, nil, primaryHash, selection))
+		require.NotContains(t, cache.sessionBindings, "openai:"+primaryHash)
+		require.NotContains(t, cache.sessionBindings, "openai:"+legacyHash)
+	})
+
+	t.Run("preserves a legacy key that existed before the provisional claim", func(t *testing.T) {
+		cache := &rollbackAwareGatewayCache{
+			stubGatewayCache: stubGatewayCache{
+				sessionBindings: map[string]int64{"openai:" + legacyHash: accountID},
+			},
+		}
+		svc := newService(cache)
+		selection, err := svc.settleAcquiredOpenAISelection(ctx, OpenAIAccountScheduleRequest{
+			SessionHash: primaryHash,
+		}, &AccountSelectionResult{
+			Account:     &Account{ID: accountID},
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		})
+		require.NoError(t, err)
+		require.False(t, selection.stickyBindingLegacyClaimed)
+
+		require.NoError(t, svc.RejectAcquiredOpenAISelection(ctx, nil, primaryHash, selection))
+		require.NotContains(t, cache.sessionBindings, "openai:"+primaryHash)
+		require.Equal(t, accountID, cache.sessionBindings["openai:"+legacyHash])
+	})
+}
+
 func TestSnapshotOpenAICompatibilityFallbackMetrics(t *testing.T) {
 	before := SnapshotOpenAICompatibilityFallbackMetrics()
 

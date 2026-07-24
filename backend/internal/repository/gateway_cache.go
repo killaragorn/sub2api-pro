@@ -36,12 +36,22 @@ func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, s
 
 func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
 	key := buildSessionKey(groupID, sessionHash)
-	return c.rdb.Set(ctx, key, accountID, ttl).Err()
+	_, err := c.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Set(ctx, key, accountID, ttl)
+		pipe.Del(ctx, sessionRollbackGuardKey(key))
+		return nil
+	})
+	return err
 }
 
 func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
 	key := buildSessionKey(groupID, sessionHash)
-	return c.rdb.Expire(ctx, key, ttl).Err()
+	_, err := c.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Expire(ctx, key, ttl)
+		pipe.Del(ctx, sessionRollbackGuardKey(key))
+		return nil
+	})
+	return err
 }
 
 // DeleteSessionAccountID 删除粘性会话与账号的绑定关系。
@@ -53,7 +63,7 @@ func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, ses
 // or unschedulable), allowing subsequent requests to select a new available account.
 func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
 	key := buildSessionKey(groupID, sessionHash)
-	return c.rdb.Del(ctx, key).Err()
+	return c.rdb.Del(ctx, key, sessionRollbackGuardKey(key)).Err()
 }
 
 // Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.

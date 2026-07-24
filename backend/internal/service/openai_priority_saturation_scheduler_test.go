@@ -19,6 +19,7 @@ type prioritySaturationConcurrencyCache struct {
 	ConcurrencyCache
 	mu       sync.Mutex
 	active   map[int64]int
+	waiting  map[int64]int
 	requests map[string]int64
 	attempts []prioritySaturationAcquireAttempt
 	released []int64
@@ -71,8 +72,10 @@ func (c *prioritySaturationConcurrencyCache) GetAccountConcurrencyBatch(_ contex
 	return result, nil
 }
 
-func (c *prioritySaturationConcurrencyCache) GetAccountWaitingCount(_ context.Context, _ int64) (int, error) {
-	return 0, nil
+func (c *prioritySaturationConcurrencyCache) GetAccountWaitingCount(_ context.Context, accountID int64) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.waiting[accountID], nil
 }
 
 func (c *prioritySaturationConcurrencyCache) GetAccountsLoadBatch(_ context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
@@ -266,6 +269,71 @@ func TestPrioritySaturationScheduler_FillsAccountsInPriorityThenIDOrder(t *testi
 	}
 }
 
+func TestPrioritySaturationScheduler_RefillsLeadingAccountAfterRelease(t *testing.T) {
+	accounts := []Account{
+		prioritySaturationTestAccount(10, 1, 2, 0),
+		prioritySaturationTestAccount(20, 2, 2, 0),
+		prioritySaturationTestAccount(30, 3, 2, 0),
+	}
+	scheduler, _, _ := newPrioritySaturationTestScheduler(accounts, nil, nil)
+
+	selections := make([]*AccountSelectionResult, 0, 3)
+	for _, wantAccountID := range []int64{10, 10, 20} {
+		selection, _, err := scheduler.Select(context.Background(), prioritySaturationRequest("", 0))
+		require.NoError(t, err)
+		require.True(t, selection.Acquired)
+		require.Equal(t, wantAccountID, selection.Account.ID)
+		selections = append(selections, selection)
+	}
+
+	selections[0].ReleaseFunc()
+	refill, _, err := scheduler.Select(context.Background(), prioritySaturationRequest("", 0))
+	require.NoError(t, err)
+	require.True(t, refill.Acquired)
+	require.Equal(t, int64(10), refill.Account.ID)
+
+	refill.ReleaseFunc()
+	for _, selection := range selections[1:] {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestPrioritySaturationScheduler_StableOrderIgnoresDynamicSignals(t *testing.T) {
+	now := time.Now()
+	earlier := now.Add(-time.Hour)
+	expensive := 9.0
+	cheap := 0.1
+	accounts := []Account{
+		prioritySaturationTestAccount(20, 2, 3, 0),
+		prioritySaturationTestAccount(10, 1, 3, 0),
+	}
+	accounts[0].LastUsedAt = &earlier
+	accounts[0].RateMultiplier = &cheap
+	accounts[1].LastUsedAt = &now
+	accounts[1].RateMultiplier = &expensive
+
+	scheduler, cache, _ := newPrioritySaturationTestScheduler(
+		accounts,
+		map[int64]int{10: 1},
+		nil,
+	)
+	cache.waiting = map[int64]int{10: 100, 20: 0}
+
+	slowTTFT := 10_000
+	fastTTFT := 1
+	for range 8 {
+		scheduler.ReportResult(10, false, &slowTTFT)
+		scheduler.ReportResult(20, true, &fastTTFT)
+	}
+
+	selection, _, err := scheduler.Select(context.Background(), prioritySaturationRequest("", 0))
+	require.NoError(t, err)
+	require.True(t, selection.Acquired)
+	require.Equal(t, int64(10), selection.Account.ID)
+	require.Equal(t, []prioritySaturationAcquireAttempt{{accountID: 10, limit: 3}}, cache.attempts)
+	selection.ReleaseFunc()
+}
+
 func TestPrioritySaturationScheduler_ConcurrentNewSessionsRespectAtomicOrder(t *testing.T) {
 	accounts := []Account{
 		prioritySaturationTestAccount(10, 1, 35, 0),
@@ -389,6 +457,74 @@ func TestPrioritySaturationScheduler_ConcurrentGeneralTrafficCannotConsumeReserv
 	for _, selection := range acquired {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestPrioritySaturationScheduler_ConcurrentGeneralAndAffinityRespectBothLimits(t *testing.T) {
+	account := prioritySaturationTestAccount(10, 1, 35, 5)
+	scheduler, cache, _ := newPrioritySaturationTestScheduler(
+		[]Account{account},
+		map[int64]int{account.ID: 29},
+		map[string]int64{"openai:mixed-owner": account.ID},
+	)
+
+	const requestsPerClass = 10
+	start := make(chan struct{})
+	results := make(chan *AccountSelectionResult, requestsPerClass*2)
+	errs := make(chan error, requestsPerClass*2)
+	var wg sync.WaitGroup
+	run := func(req OpenAIAccountScheduleRequest) {
+		defer wg.Done()
+		<-start
+		selection, _, err := scheduler.Select(context.Background(), req)
+		if err != nil {
+			errs <- err
+			return
+		}
+		results <- selection
+	}
+	wg.Add(requestsPerClass * 2)
+	for range requestsPerClass {
+		go run(prioritySaturationRequest("", 0))
+		go run(prioritySaturationRequest("mixed-owner", account.ID))
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	generalAcquired := 0
+	affinityAcquired := 0
+	acquired := make([]*AccountSelectionResult, 0, account.Concurrency-29)
+	for selection := range results {
+		require.NotNil(t, selection)
+		if !selection.Acquired {
+			require.NotNil(t, selection.WaitPlan)
+			continue
+		}
+		acquired = append(acquired, selection)
+		if selection.SessionOwnerID == account.ID {
+			affinityAcquired++
+		} else {
+			generalAcquired++
+		}
+	}
+
+	require.LessOrEqual(t, generalAcquired, 1)
+	require.Equal(t, account.Concurrency-29, generalAcquired+affinityAcquired)
+	cache.mu.Lock()
+	require.Equal(t, account.Concurrency, cache.active[account.ID])
+	cache.mu.Unlock()
+
+	for _, selection := range acquired {
+		selection.ReleaseFunc()
+	}
+	cache.mu.Lock()
+	require.Equal(t, 29, cache.active[account.ID])
+	cache.mu.Unlock()
 }
 
 func TestPrioritySaturationScheduler_EstablishedAffinityUsesReservedCapacity(t *testing.T) {
@@ -672,4 +808,162 @@ func TestGetOpenAIAccountScheduler_PrioritySaturationIsIndependentAndWinsDefensi
 	require.IsType(t, &prioritySaturationOpenAIAccountScheduler{}, scheduler)
 	require.True(t, svc.isOpenAIPrioritySaturationEnabled(context.Background()))
 	require.False(t, svc.isOpenAIAdvancedSchedulerEnabled(context.Background()))
+}
+
+type crossPolicySessionRoleKey struct{}
+
+type crossPolicySessionCache struct {
+	*prioritySaturationSessionCache
+	barrierMu     sync.Mutex
+	arrived       int
+	bothArrived   chan struct{}
+	winnerClaimed chan struct{}
+	winnerRole    string
+}
+
+func newCrossPolicySessionCache(winnerRole string) *crossPolicySessionCache {
+	return &crossPolicySessionCache{
+		prioritySaturationSessionCache: &prioritySaturationSessionCache{},
+		bothArrived:                    make(chan struct{}),
+		winnerClaimed:                  make(chan struct{}),
+		winnerRole:                     winnerRole,
+	}
+}
+
+func (c *crossPolicySessionCache) ClaimSessionAccount(
+	ctx context.Context,
+	groupID int64,
+	sessionHash string,
+	accountID int64,
+	ttl time.Duration,
+) (int64, bool, error) {
+	role, _ := ctx.Value(crossPolicySessionRoleKey{}).(string)
+
+	c.barrierMu.Lock()
+	c.arrived++
+	initialClaim := c.arrived <= 2
+	if c.arrived == 2 {
+		close(c.bothArrived)
+	}
+	c.barrierMu.Unlock()
+
+	if initialClaim {
+		select {
+		case <-c.bothArrived:
+		case <-ctx.Done():
+			return 0, false, ctx.Err()
+		}
+		if role != c.winnerRole {
+			select {
+			case <-c.winnerClaimed:
+			case <-ctx.Done():
+				return 0, false, ctx.Err()
+			}
+		}
+	}
+
+	ownerID, claimed, err := c.prioritySaturationSessionCache.ClaimSessionAccount(
+		ctx,
+		groupID,
+		sessionHash,
+		accountID,
+		ttl,
+	)
+	if initialClaim && role == c.winnerRole {
+		close(c.winnerClaimed)
+	}
+	return ownerID, claimed, err
+}
+
+func TestOpenAIAccountSchedulers_TwoServiceInstancesConvergeOnAtomicOwner(t *testing.T) {
+	for _, winnerRole := range []string{"weighted", "priority"} {
+		t.Run(winnerRole+" wins initial claim", func(t *testing.T) {
+			accounts := []Account{
+				prioritySaturationTestAccount(10, 1, 1, 0),
+				prioritySaturationTestAccount(20, 2, 1, 0),
+			}
+			sessionCache := newCrossPolicySessionCache(winnerRole)
+			concurrencyCache := &prioritySaturationConcurrencyCache{}
+			concurrencyService := NewConcurrencyService(concurrencyCache)
+			newService := func() *OpenAIGatewayService {
+				cfg := &config.Config{}
+				cfg.Gateway.OpenAIWS.LBTopK = 2
+				cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
+				cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
+				return &OpenAIGatewayService{
+					accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+					cache:              sessionCache,
+					cfg:                cfg,
+					concurrencyService: concurrencyService,
+				}
+			}
+
+			weighted := newDefaultOpenAIAccountScheduler(newService(), nil)
+			priority := newPrioritySaturationOpenAIAccountScheduler(newService(), nil)
+			request := OpenAIAccountScheduleRequest{
+				Platform:               PlatformOpenAI,
+				SessionHash:            "cross-policy-owner",
+				CanTemporarilyOverflow: true,
+				RequiredTransport:      OpenAIUpstreamTransportHTTPSSE,
+			}
+
+			type schedulerResult struct {
+				role      string
+				selection *AccountSelectionResult
+				err       error
+			}
+			results := make(chan schedulerResult, 2)
+			run := func(role string, scheduler OpenAIAccountScheduler) {
+				ctx, cancel := context.WithTimeout(
+					context.WithValue(context.Background(), crossPolicySessionRoleKey{}, role),
+					5*time.Second,
+				)
+				defer cancel()
+				selection, _, err := scheduler.Select(ctx, request)
+				results <- schedulerResult{role: role, selection: selection, err: err}
+			}
+			go run("weighted", weighted)
+			go run("priority", priority)
+
+			got := []schedulerResult{<-results, <-results}
+			for _, item := range got {
+				require.NoError(t, item.err, item.role)
+				require.NotNil(t, item.selection, item.role)
+				require.NotNil(t, item.selection.Account, item.role)
+			}
+
+			var acquired *AccountSelectionResult
+			var waiting *AccountSelectionResult
+			for _, item := range got {
+				if item.selection.Acquired {
+					require.Nil(t, acquired)
+					acquired = item.selection
+				} else {
+					require.Nil(t, waiting)
+					waiting = item.selection
+				}
+			}
+			require.NotNil(t, acquired)
+			require.NotNil(t, waiting)
+			require.NotNil(t, waiting.WaitPlan)
+			require.Equal(t, acquired.Account.ID, waiting.Account.ID)
+			require.Equal(t, acquired.Account.ID, waiting.SessionOwnerID)
+			require.Equal(t, acquired.Account.ID, waiting.WaitPlan.AccountID)
+
+			sessionCache.mu.Lock()
+			require.Equal(t, acquired.Account.ID, sessionCache.sessionBindings["openai:cross-policy-owner"])
+			sessionCache.mu.Unlock()
+
+			concurrencyCache.mu.Lock()
+			require.Equal(t, 1, concurrencyCache.active[acquired.Account.ID])
+			for _, account := range accounts {
+				if account.ID != acquired.Account.ID {
+					require.Zero(t, concurrencyCache.active[account.ID])
+				}
+			}
+			concurrencyCache.mu.Unlock()
+
+			acquired.ReleaseFunc()
+		})
+	}
 }

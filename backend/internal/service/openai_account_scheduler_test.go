@@ -146,6 +146,102 @@ func (c schedulerTestConcurrencyCache) GetAccountWaitingCount(ctx context.Contex
 	return 0, nil
 }
 
+func TestDefaultOpenAIAccountScheduler_AtomicAcquireOverridesStaleFullSnapshot(t *testing.T) {
+	account := Account{
+		ID:          29901,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 3,
+		Priority:    1,
+		Extra: map[string]any{
+			AccountExtraAffinityConcurrencyReserve: 1,
+		},
+	}
+	acquiredIDs := make([]int64, 0, 1)
+	cache := schedulerTestConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			account.ID: {
+				AccountID:          account.ID,
+				CurrentConcurrency: account.GeneralConcurrencyLimit(),
+				LoadRate:           100,
+			},
+		},
+		acquireResults: map[int64]bool{account.ID: true},
+		acquiredIDs:    &acquiredIDs,
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		concurrencyService: NewConcurrencyService(cache),
+	}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc}
+	selection, _, err := scheduler.tryAcquireOpenAISelectionOrder(
+		context.Background(),
+		OpenAIAccountScheduleRequest{
+			Platform:          PlatformOpenAI,
+			RequiredTransport: OpenAIUpstreamTransportHTTPSSE,
+		},
+		[]openAIAccountCandidateScore{{
+			account:   &account,
+			loadInfo:  cache.loadMap[account.ID],
+			loadKnown: true,
+		}},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.True(t, selection.Acquired)
+	require.Equal(t, account.ID, selection.Account.ID)
+	require.Equal(t, []int64{account.ID}, acquiredIDs)
+	selection.ReleaseFunc()
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_AtomicAcquireOverridesStaleFullSnapshot(t *testing.T) {
+	account := Account{
+		ID:          29902,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 3,
+		Priority:    1,
+		Extra: map[string]any{
+			AccountExtraAffinityConcurrencyReserve: 1,
+		},
+	}
+	acquiredIDs := make([]int64, 0, 1)
+	cache := schedulerTestConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			account.ID: {
+				AccountID:          account.ID,
+				CurrentConcurrency: account.GeneralConcurrencyLimit(),
+				LoadRate:           100,
+			},
+		},
+		acquireResults: map[int64]bool{account.ID: true},
+		acquiredIDs:    &acquiredIDs,
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		concurrencyService: NewConcurrencyService(cache),
+	}
+	selection, err := svc.SelectAccountWithLoadAwareness(
+		context.Background(),
+		nil,
+		"",
+		"",
+		nil,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.True(t, selection.Acquired)
+	require.Equal(t, account.ID, selection.Account.ID)
+	require.Equal(t, []int64{account.ID}, acquiredIDs)
+	selection.ReleaseFunc()
+}
+
 type schedulerTestGatewayCache struct {
 	sessionBindings map[string]int64
 	deletedSessions map[string]int

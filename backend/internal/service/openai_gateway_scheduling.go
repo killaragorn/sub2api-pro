@@ -1097,18 +1097,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
-			if loadInfo.LoadRate < 100 {
-				available = append(available, accountWithLoad{
-					account:  acc,
-					loadInfo: loadInfo,
-				})
-				continue
-			}
-			affinity := stickyAccountID > 0 && acc.ID == stickyAccountID
-			limit := acc.ConcurrencyLimitForAffinity(affinity)
-			if limit > 0 && loadInfo.CurrentConcurrency >= limit {
-				recordOpenAIGeneralRejectFromContext(ctx, acc.ID, affinity)
-			}
+			// Load snapshots only order candidates. Admission is decided by the
+			// atomic Redis acquire below so a just-released slot is immediately
+			// reusable even while the short-lived load cache is stale.
+			available = append(available, accountWithLoad{
+				account:  acc,
+				loadInfo: loadInfo,
+			})
 		}
 
 		if len(available) == 0 {

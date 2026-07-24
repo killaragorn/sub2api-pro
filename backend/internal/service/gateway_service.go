@@ -551,6 +551,8 @@ type AccountSelectionResult struct {
 	convergeStickyBinding        bool
 	stickyBindingClaimed         bool
 	stickyBindingPreviousOwnerID int64
+	stickyBindingRollbackToken   string
+	stickyBindingLegacyClaimed   bool
 }
 
 // ClaudeUsage 表示Claude API返回的usage信息
