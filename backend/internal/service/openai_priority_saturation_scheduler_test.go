@@ -204,7 +204,10 @@ func newPrioritySaturationTestScheduler(
 		cfg:                &config.Config{},
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
-	scheduler := newPrioritySaturationOpenAIAccountScheduler(svc, nil).(*prioritySaturationOpenAIAccountScheduler)
+	scheduler, ok := newPrioritySaturationOpenAIAccountScheduler(svc, nil).(*prioritySaturationOpenAIAccountScheduler)
+	if !ok {
+		panic("priority saturation scheduler constructor returned an unexpected type")
+	}
 	return scheduler, concurrencyCache, sessionCache
 }
 
