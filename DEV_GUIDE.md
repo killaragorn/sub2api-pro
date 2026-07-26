@@ -12,6 +12,8 @@
 | **数据库** | PostgreSQL 16 + Redis |
 | **包管理** | 后端: go modules, 前端: **pnpm**（不是 npm） |
 
+当前 Pro 版本相对官方基线的完整功能、安全、更新和发布差异见 [sub2api-pro 二次开发变更说明](docs/SUB2API_PRO_CUSTOMIZATIONS_CN.md)。
+
 二次开发的长期分支、上游同步、合并和发布规则见 [sub2api-pro 分支管理规范](docs/DOWNSTREAM_BRANCHING_CN.md)。
 
 ## 二、本地环境配置

@@ -18,6 +18,8 @@
 
 </div>
 
+> **sub2api-pro 下游版本：**`product/main` 包含相对官方 sub2api 的定制调度、风控审计、自更新和发布逻辑。部署或升级前请阅读 [二次开发变更说明](docs/SUB2API_PRO_CUSTOMIZATIONS_CN.md)，其中包含完整差异及重要的请求体存储安全提示。
+
 
 ## ⚠️ 重要提醒
 
