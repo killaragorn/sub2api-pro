@@ -20,6 +20,7 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -30,7 +31,7 @@ var (
 const (
 	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	githubRepo     = "killaragorn/sub2api-pro"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -639,6 +640,21 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 
 // compareVersions compares two semantic versions
 func compareVersions(current, latest string) int {
+	currentSemver := normalizeSemver(current)
+	latestSemver := normalizeSemver(latest)
+	if semver.IsValid(currentSemver) && semver.IsValid(latestSemver) {
+		// Downstream -pro.N tags are formal production revisions. For the same
+		// upstream base, never replace a Pro build with the unmodified release.
+		if currentBase, ok := proBaseVersion(currentSemver); ok && currentBase == latestSemver {
+			return 1
+		}
+		if latestBase, ok := proBaseVersion(latestSemver); ok && latestBase == currentSemver {
+			return -1
+		}
+		return semver.Compare(currentSemver, latestSemver)
+	}
+
+	// Preserve compatibility with older non-SemVer build strings.
 	currentParts := parseVersion(current)
 	latestParts := parseVersion(latest)
 
@@ -653,8 +669,34 @@ func compareVersions(current, latest string) int {
 	return 0
 }
 
+func normalizeSemver(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	return v
+}
+
+func proBaseVersion(v string) (string, bool) {
+	prerelease := strings.TrimPrefix(semver.Prerelease(v), "-")
+	parts := strings.Split(prerelease, ".")
+	if len(parts) != 2 || parts[0] != "pro" {
+		return "", false
+	}
+	if revision, err := strconv.Atoi(parts[1]); err != nil || revision < 1 {
+		return "", false
+	}
+	return strings.SplitN(v, "-", 2)[0], true
+}
+
 func parseVersion(v string) [3]int {
-	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if suffix := strings.IndexAny(v, "-+"); suffix >= 0 {
+		v = v[:suffix]
+	}
 	parts := strings.Split(v, ".")
 	result := [3]int{0, 0, 0}
 	for i := 0; i < len(parts) && i < 3; i++ {

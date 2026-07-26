@@ -10,7 +10,7 @@ docker run -d \
   -p 8080:8080 \
   -e DATABASE_URL="postgres://user:pass@host:5432/sub2api" \
   -e REDIS_URL="redis://host:6379" \
-  weishaw/sub2api:latest
+  ghcr.io/killaragorn/sub2api-pro:latest
 ```
 
 ## Docker Compose
@@ -20,7 +20,7 @@ version: '3.8'
 
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ghcr.io/killaragorn/sub2api-pro:latest
     ports:
       - "8080:8080"
     environment:
@@ -70,7 +70,21 @@ volumes:
 - `x.y` - Latest patch of minor version
 - `x` - Latest minor of major version
 
+## In-container updates
+
+Release containers can use the admin console's built-in updater. Update checks,
+downloads, checksums, and rollback candidates come from
+`killaragorn/sub2api-pro` GitHub Releases. The updater atomically replaces
+`/app/sub2api`; the container entrypoint keeps that path writable by the
+non-root `sub2api` user, and `restart: unless-stopped` starts the updated binary
+after the requested restart.
+
+An in-container update survives a normal container or Docker daemon restart,
+but recreating the container restores the binary from its image. Pin the
+initial release image and avoid recreating the application container unless
+you intentionally want to return to that image version.
+
 ## Links
 
-- [GitHub Repository](https://github.com/weishaw/sub2api)
-- [Documentation](https://github.com/weishaw/sub2api#readme)
+- [GitHub Repository](https://github.com/killaragorn/sub2api-pro)
+- [Documentation](https://github.com/killaragorn/sub2api-pro#readme)

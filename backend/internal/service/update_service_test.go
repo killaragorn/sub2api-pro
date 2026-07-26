@@ -31,13 +31,17 @@ type updateServiceGitHubClientStub struct {
 	release        *GitHubRelease
 	recentReleases []*GitHubRelease
 	recentErr      error
+	latestRepo     string
+	recentRepo     string
 }
 
-func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchLatestRelease(_ context.Context, repo string) (*GitHubRelease, error) {
+	s.latestRepo = repo
 	return s.release, nil
 }
 
-func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchRecentReleases(_ context.Context, repo string, _ int) ([]*GitHubRelease, error) {
+	s.recentRepo = repo
 	return s.recentReleases, s.recentErr
 }
 
@@ -67,6 +71,56 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrNoUpdateAvailable))
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
+}
+
+func TestUpdateServiceUsesProReleaseRepository(t *testing.T) {
+	client := &updateServiceGitHubClientStub{
+		release: &GitHubRelease{
+			TagName: "v0.1.165-pro.2",
+			Name:    "v0.1.165-pro.2",
+		},
+		recentReleases: []*GitHubRelease{
+			{TagName: "v0.1.165-pro.1"},
+		},
+	}
+	svc := NewUpdateService(
+		&updateServiceCacheStub{},
+		client,
+		"0.1.165-pro.1",
+		"release",
+	)
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.True(t, info.HasUpdate)
+	require.Equal(t, "killaragorn/sub2api-pro", client.latestRepo)
+
+	_, err = svc.ListRollbackVersions(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "killaragorn/sub2api-pro", client.recentRepo)
+}
+
+func TestCompareVersionsSupportsProReleaseTags(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		want    int
+	}{
+		{name: "same pro release", current: "0.1.165-pro.1", latest: "0.1.165-pro.1", want: 0},
+		{name: "newer pro revision", current: "0.1.165-pro.1", latest: "0.1.165-pro.2", want: -1},
+		{name: "older pro revision", current: "v0.1.165-pro.2", latest: "v0.1.165-pro.1", want: 1},
+		{name: "newer upstream base", current: "0.1.165-pro.9", latest: "0.1.166-pro.1", want: -1},
+		{name: "same base official does not replace pro", current: "0.1.165-pro.1", latest: "0.1.165", want: 1},
+		{name: "same base pro replaces official", current: "0.1.165", latest: "0.1.165-pro.1", want: -1},
+		{name: "legacy build suffix fallback", current: "0.1.164-custom_build", latest: "0.1.165-custom_build", want: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, compareVersions(tt.current, tt.latest))
+		})
+	}
 }
 
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {

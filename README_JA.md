@@ -252,7 +252,7 @@ GitHub Releases からビルド済みバイナリをダウンロードするワ�
 #### インストール手順
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/killaragorn/sub2api-pro/product/main/deploy/install.sh | sudo bash
 ```
 
 スクリプトは以下を実行します:
@@ -302,7 +302,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # アンインストール
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/killaragorn/sub2api-pro/product/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -325,7 +325,7 @@ PostgreSQL と Redis のコンテナを含む Docker Compose でデプロイし�
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # デプロイ準備スクリプトをダウンロードして実行
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/killaragorn/sub2api-pro/product/main/deploy/docker-deploy.sh | bash
 
 # サービスを起動
 docker compose up -d
@@ -347,8 +347,8 @@ docker compose logs -f sub2api
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/Wei-Shaw/sub2api.git
-cd sub2api/deploy
+git clone https://github.com/killaragorn/sub2api-pro.git
+cd sub2api-pro/deploy
 
 # 2. 環境設定ファイルをコピー
 cp .env.example .env
@@ -477,8 +477,8 @@ rm -rf data/ postgres_data/ redis_data/
 Apple シリコン搭載 Mac と macOS 26 では、Apple `container` 1.1.0 以降を使用して Sub2API、PostgreSQL、Redis の完全なスタックを実行できます:
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
-cd sub2api/deploy
+git clone https://github.com/killaragorn/sub2api-pro.git
+cd sub2api-pro/deploy
 ./apple-container.sh init
 ./apple-container.sh up
 ./apple-container.sh status
@@ -503,8 +503,8 @@ cd sub2api/deploy
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/Wei-Shaw/sub2api.git
-cd sub2api
+git clone https://github.com/killaragorn/sub2api-pro.git
+cd sub2api-pro
 
 # 2. pnpm をインストール（未インストールの場合）
 npm install -g pnpm
