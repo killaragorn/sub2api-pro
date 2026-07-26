@@ -241,6 +241,81 @@ func TestPrioritySaturationScheduler_NewSessionsUsePriorityThenIDAndGeneralLimit
 	selection.ReleaseFunc()
 }
 
+func TestPrioritySaturationScheduler_RequiresPrivacyAcrossPriorityCandidates(t *testing.T) {
+	ineligible := prioritySaturationTestAccount(10, 1, 3, 0)
+	eligible := prioritySaturationTestAccount(20, 2, 3, 0)
+	eligible.Extra["privacy_mode"] = PrivacyModeTrainingOff
+	scheduler, cache, _ := newPrioritySaturationTestScheduler(
+		[]Account{ineligible, eligible},
+		nil,
+		nil,
+	)
+	req := prioritySaturationRequest("", 0)
+	req.RequirePrivacySet = true
+
+	selection, _, err := scheduler.Select(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.True(t, selection.Acquired)
+	require.Equal(t, eligible.ID, selection.Account.ID)
+	require.Equal(t, []prioritySaturationAcquireAttempt{{
+		accountID: eligible.ID,
+		limit:     eligible.GeneralConcurrencyLimit(),
+	}}, cache.attempts)
+	selection.ReleaseFunc()
+}
+
+func TestPrioritySaturationScheduler_PrivacyIneligibleStickyOwnerMigratesWhenAllowed(t *testing.T) {
+	owner := prioritySaturationTestAccount(10, 1, 3, 1)
+	fallback := prioritySaturationTestAccount(20, 2, 3, 0)
+	fallback.Extra["privacy_mode"] = PrivacyModeTrainingOff
+	sessionHash := "privacy-owner"
+	scheduler, _, sessionCache := newPrioritySaturationTestScheduler(
+		[]Account{owner, fallback},
+		nil,
+		map[string]int64{"openai:" + sessionHash: owner.ID},
+	)
+	req := prioritySaturationRequest(sessionHash, owner.ID)
+	req.RequirePrivacySet = true
+	req.CanTemporarilyOverflow = true
+
+	selection, _, err := scheduler.Select(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.True(t, selection.Acquired)
+	require.Equal(t, fallback.ID, selection.Account.ID)
+	require.Equal(t, fallback.ID, selection.SessionOwnerID)
+	sessionCache.mu.Lock()
+	require.Equal(t, fallback.ID, sessionCache.sessionBindings["openai:"+sessionHash])
+	sessionCache.mu.Unlock()
+	selection.ReleaseFunc()
+}
+
+func TestPrioritySaturationScheduler_PrivacyIneligibleStickyOwnerRejectsWhenMoveForbidden(t *testing.T) {
+	owner := prioritySaturationTestAccount(10, 1, 3, 1)
+	fallback := prioritySaturationTestAccount(20, 2, 3, 0)
+	fallback.Extra["privacy_mode"] = PrivacyModeTrainingOff
+	sessionHash := "privacy-owner-locked"
+	scheduler, cache, sessionCache := newPrioritySaturationTestScheduler(
+		[]Account{owner, fallback},
+		nil,
+		map[string]int64{"openai:" + sessionHash: owner.ID},
+	)
+	req := prioritySaturationRequest(sessionHash, owner.ID)
+	req.RequirePrivacySet = true
+
+	selection, _, err := scheduler.Select(context.Background(), req)
+
+	require.Nil(t, selection)
+	require.ErrorContains(t, err, "session_affinity_unavailable")
+	require.Empty(t, cache.attempts)
+	sessionCache.mu.Lock()
+	require.Equal(t, owner.ID, sessionCache.sessionBindings["openai:"+sessionHash])
+	sessionCache.mu.Unlock()
+}
+
 func TestPrioritySaturationScheduler_FillsAccountsInPriorityThenIDOrder(t *testing.T) {
 	accounts := []Account{
 		prioritySaturationTestAccount(30, 2, 2, 0),

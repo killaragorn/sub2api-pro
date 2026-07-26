@@ -1,12 +1,43 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+type prioritySaturationDefaultSettingRepo struct {
+	SettingRepository
+	values map[string]string
+}
+
+func (r *prioritySaturationDefaultSettingRepo) GetValue(_ context.Context, key string) (string, error) {
+	value, ok := r.values[key]
+	if !ok {
+		return "", ErrSettingNotFound
+	}
+	return value, nil
+}
+
+func (r *prioritySaturationDefaultSettingRepo) SetMultiple(_ context.Context, values map[string]string) error {
+	for key, value := range values {
+		r.values[key] = value
+	}
+	return nil
+}
+
+func TestInitializeDefaultSettingsEnablesPrioritySaturation(t *testing.T) {
+	repo := &prioritySaturationDefaultSettingRepo{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	require.NoError(t, svc.InitializeDefaultSettings(context.Background()))
+	require.Equal(t, "true", repo.values[SettingKeyOpenAIPrioritySaturationEnabled])
+	require.Equal(t, "false", repo.values[openAIAdvancedSchedulerSettingKey])
+}
 
 func TestValidateOpenAISchedulerSwitches(t *testing.T) {
 	for _, settings := range []*SystemSettings{

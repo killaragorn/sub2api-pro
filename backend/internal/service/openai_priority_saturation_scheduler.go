@@ -139,11 +139,6 @@ func (s *prioritySaturationOpenAIAccountScheduler) eligibleAccounts(
 		return nil, stats, err
 	}
 
-	var schedGroup *Group
-	if req.GroupID != nil && s.base.service.schedulerSnapshot != nil {
-		schedGroup, _ = s.base.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
-	}
-
 	eligible := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
@@ -153,10 +148,6 @@ func (s *prioritySaturationOpenAIAccountScheduler) eligibleAccounts(
 		}
 		if !account.IsSchedulable() || account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() {
 			stats.exclude("not_schedulable")
-			continue
-		}
-		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
-			stats.exclude("privacy_not_set")
 			continue
 		}
 		if compatible, reason := s.base.isAccountRequestCompatibleReason(ctx, account, req); !compatible {

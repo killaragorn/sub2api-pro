@@ -1060,7 +1060,7 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(schedulerToggleValue("openai-priority-saturation-toggle")).toBe(false);
   });
 
-  it("defaults the priority saturation switch to false for legacy settings responses", async () => {
+  it("defaults the priority saturation switch to true for legacy settings responses", async () => {
     const {
       openai_priority_saturation_enabled: _omitted,
       ...legacySettingsResponse
@@ -1077,16 +1077,38 @@ describe("admin SettingsView payment visible method controls", () => {
           toggle.attributes("data-testid") ===
           "openai-priority-saturation-toggle",
       );
-    expect(priorityToggle?.props("modelValue")).toBe(false);
+    expect(priorityToggle?.props("modelValue")).toBe(true);
 
     await wrapper.find("form").trigger("submit.prevent");
     await flushPromises();
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({
-        openai_priority_saturation_enabled: false,
+        openai_priority_saturation_enabled: true,
         openai_advanced_scheduler_enabled: false,
       }),
     );
+  });
+
+  it("preserves an enabled advanced scheduler when a legacy response omits priority saturation", async () => {
+    const {
+      openai_priority_saturation_enabled: _omitted,
+      ...legacySettingsResponse
+    } = baseSettingsResponse;
+    getSettings.mockResolvedValueOnce({
+      ...legacySettingsResponse,
+      openai_advanced_scheduler_enabled: true,
+    });
+    const wrapper = mountView();
+    const schedulerToggleValue = (testId: string) =>
+      wrapper
+        .findAllComponents(ToggleStub)
+        .find((toggle) => toggle.attributes("data-testid") === testId)
+        ?.props("modelValue");
+
+    await flushPromises();
+
+    expect(schedulerToggleValue("openai-advanced-scheduler-toggle")).toBe(true);
+    expect(schedulerToggleValue("openai-priority-saturation-toggle")).toBe(false);
   });
 
   it("rejects a dirty configuration with both OpenAI schedulers enabled", async () => {

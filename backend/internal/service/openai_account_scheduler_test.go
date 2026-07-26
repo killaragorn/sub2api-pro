@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,6 +61,24 @@ func (r schedulerTestOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx c
 
 type schedulerGroupAwareOpenAIAccountRepo struct {
 	schedulerTestOpenAIAccountRepo
+}
+
+type openAIPrivacyGroupRepoStub struct {
+	GroupRepository
+	group            *Group
+	err              error
+	getByIDCalls     int
+	getByIDLiteCalls int
+}
+
+func (r *openAIPrivacyGroupRepoStub) GetByID(context.Context, int64) (*Group, error) {
+	r.getByIDCalls++
+	return r.group, r.err
+}
+
+func (r *openAIPrivacyGroupRepoStub) GetByIDLite(context.Context, int64) (*Group, error) {
+	r.getByIDLiteCalls++
+	return r.group, r.err
 }
 
 func (r schedulerGroupAwareOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
@@ -144,6 +163,82 @@ func (c schedulerTestConcurrencyCache) GetAccountWaitingCount(ctx context.Contex
 		}
 	}
 	return 0, nil
+}
+
+func TestOpenAIGatewayService_ResolveOpenAISchedulingPrivacyRequirementFromContext(t *testing.T) {
+	groupID := int64(701)
+	group := &Group{
+		ID:                groupID,
+		Platform:          PlatformOpenAI,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, group)
+
+	requirePrivacySet, err := (&OpenAIGatewayService{}).
+		resolveOpenAISchedulingRequirePrivacySet(ctx, &groupID)
+
+	require.NoError(t, err)
+	require.True(t, requirePrivacySet)
+}
+
+func TestOpenAIGatewayService_ResolveOpenAISchedulingPrivacyRequirementPrefersSnapshot(t *testing.T) {
+	groupID := int64(702)
+	repo := &openAIPrivacyGroupRepoStub{group: &Group{
+		ID:                groupID,
+		RequirePrivacySet: true,
+	}}
+	contextGroup := &Group{
+		ID:                groupID,
+		Platform:          PlatformOpenAI,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: false,
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, contextGroup)
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot: &SchedulerSnapshotService{groupRepo: repo},
+		channelService:    &ChannelService{groupRepo: repo},
+	}
+
+	requirePrivacySet, err := svc.resolveOpenAISchedulingRequirePrivacySet(ctx, &groupID)
+
+	require.NoError(t, err)
+	require.True(t, requirePrivacySet)
+	require.Equal(t, 1, repo.getByIDCalls)
+	require.Zero(t, repo.getByIDLiteCalls)
+}
+
+func TestOpenAIGatewayService_ResolveOpenAISchedulingPrivacyRequirementUsesChannelRepository(t *testing.T) {
+	groupID := int64(703)
+	repo := &openAIPrivacyGroupRepoStub{group: &Group{
+		ID:                groupID,
+		RequirePrivacySet: true,
+	}}
+	svc := &OpenAIGatewayService{
+		channelService: &ChannelService{groupRepo: repo},
+	}
+
+	requirePrivacySet, err := svc.resolveOpenAISchedulingRequirePrivacySet(context.Background(), &groupID)
+
+	require.NoError(t, err)
+	require.True(t, requirePrivacySet)
+	require.Zero(t, repo.getByIDCalls)
+	require.Equal(t, 1, repo.getByIDLiteCalls)
+}
+
+func TestOpenAIGatewayService_ResolveOpenAISchedulingPrivacyRequirementFailsClosed(t *testing.T) {
+	groupID := int64(704)
+	repo := &openAIPrivacyGroupRepoStub{err: errors.New("database unavailable")}
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot: &SchedulerSnapshotService{groupRepo: repo},
+	}
+
+	requirePrivacySet, err := svc.resolveOpenAISchedulingRequirePrivacySet(context.Background(), &groupID)
+
+	require.False(t, requirePrivacySet)
+	require.ErrorContains(t, err, "database unavailable")
 }
 
 func TestDefaultOpenAIAccountScheduler_AtomicAcquireOverridesStaleFullSnapshot(t *testing.T) {

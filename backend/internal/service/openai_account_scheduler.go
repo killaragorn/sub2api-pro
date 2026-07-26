@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -86,6 +87,7 @@ type OpenAIAccountScheduleRequest struct {
 	RequiredCapability      OpenAIEndpointCapability
 	RequiredImageCapability OpenAIImagesCapability
 	RequireCompact          bool
+	RequirePrivacySet       bool
 	ExcludedIDs             map[int64]struct{}
 	generalRejectCounter    *openAIGeneralRejectCounter
 }
@@ -98,6 +100,60 @@ type OpenAIAccountSchedulingOptions struct {
 	CanTemporarilyOverflow  bool
 	UseUpstreamTokenCost    bool
 	Platform                string
+}
+
+func (s *OpenAIGatewayService) resolveOpenAISchedulingRequirePrivacySet(
+	ctx context.Context,
+	groupID *int64,
+) (bool, error) {
+	if groupID == nil {
+		return false, nil
+	}
+	if *groupID <= 0 {
+		return false, fmt.Errorf("resolve OpenAI scheduling group privacy requirement: invalid group id %d", *groupID)
+	}
+
+	var (
+		group *Group
+		err   error
+	)
+	switch {
+	case s != nil && s.schedulerSnapshot != nil && s.schedulerSnapshot.groupRepo != nil:
+		group, err = s.schedulerSnapshot.GetGroupByID(ctx, *groupID)
+	case s != nil && s.channelService != nil && s.channelService.groupRepo != nil:
+		group, err = s.channelService.groupRepo.GetByIDLite(ctx, *groupID)
+	default:
+		if ctx == nil {
+			return false, nil
+		}
+		contextGroup, ok := ctx.Value(ctxkey.Group).(*Group)
+		if !ok || contextGroup == nil {
+			// Lightweight unit-test services may intentionally omit all group
+			// resolvers. Production API-key requests carry a hydrated group.
+			return false, nil
+		}
+		if !IsGroupContextValid(contextGroup) || contextGroup.ID != *groupID {
+			return false, fmt.Errorf(
+				"resolve OpenAI scheduling group privacy requirement: invalid context group for id %d",
+				*groupID,
+			)
+		}
+		return contextGroup.RequirePrivacySet, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf(
+			"resolve OpenAI scheduling group %d privacy requirement: %w",
+			*groupID,
+			err,
+		)
+	}
+	if group == nil || group.ID != *groupID {
+		return false, fmt.Errorf(
+			"resolve OpenAI scheduling group privacy requirement: group %d not found",
+			*groupID,
+		)
+	}
+	return group.RequirePrivacySet, nil
 }
 
 type openAIGeneralRejectCounter struct {
@@ -1346,12 +1402,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary(""))
 	}
 
-	// require_privacy_set: 获取分组信息
-	var schedGroup *Group
-	if req.GroupID != nil && s.service.schedulerSnapshot != nil {
-		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
-	}
-
 	filterStats := openAISelectionFilterStats{pool: len(accounts)}
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
@@ -1377,14 +1427,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		if s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
 			filterStats.exclude("runtime_blocked")
-			continue
-		}
-		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
-		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
-			s.service.BlockAccountScheduling(account, time.Time{}, "privacy_not_set")
-			_ = s.service.accountRepo.SetError(ctx, account.ID,
-				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
-			filterStats.exclude("privacy_not_set")
 			continue
 		}
 		if compatible, reason := s.isAccountRequestCompatibleReason(ctx, account, req); !compatible {
@@ -1741,6 +1783,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) (bool, string) {
 	if account == nil {
 		return false, "account_nil"
+	}
+	if req.RequirePrivacySet && !account.IsPrivacySet() {
+		return false, "privacy_not_set"
 	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
 		return false, "runtime_blocked"
@@ -2281,6 +2326,10 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}()
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	platform = normalizeOpenAICompatiblePlatform(platform)
+	requirePrivacySet, err := s.resolveOpenAISchedulingRequirePrivacySet(ctx, groupID)
+	if err != nil {
+		return nil, decision, err
+	}
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && accountID > 0 {
@@ -2301,6 +2350,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
 		RequireCompact:          requireCompact,
+		RequirePrivacySet:       requirePrivacySet,
 		ExcludedIDs:             excludedIDs,
 	}
 
@@ -2362,7 +2412,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 			effectiveExcludedIDs := newLegacyExcludedIDs()
 			for {
-				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, "", requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
+				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, "", requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost, scheduleReq.RequirePrivacySet)
 				if err != nil {
 					if canWaitForOverflow &&
 						(errors.Is(err, ErrNoAvailableAccounts) || errors.Is(err, ErrNoAvailableCompactAccounts)) {
@@ -2393,7 +2443,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 
 		effectiveExcludedIDs := newLegacyExcludedIDs()
 		for {
-			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, "", requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
+			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, "", requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost, scheduleReq.RequirePrivacySet)
 			if err != nil {
 				if canWaitForOverflow &&
 					(errors.Is(err, ErrNoAvailableAccounts) || errors.Is(err, ErrNoAvailableCompactAccounts)) {

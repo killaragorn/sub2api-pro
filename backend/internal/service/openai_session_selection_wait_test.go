@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
 
@@ -139,6 +140,86 @@ func TestFinalizeAcquiredOpenAISelection_ReschedulesAfterWaitTargetBecameIneligi
 	require.True(t, finalized.Acquired)
 	require.NotNil(t, finalized.Account)
 	require.Equal(t, fallback.ID, finalized.Account.ID)
+	require.Equal(t, 1, initialReleaseCount)
+	require.Equal(t, []int{fallback.GeneralConcurrencyLimit()}, concurrencyCache.acquireLimits)
+
+	finalized.ReleaseFunc()
+	require.Equal(t, 1, concurrencyCache.releaseCount)
+}
+
+func TestFinalizeAcquiredOpenAISelection_ReschedulesAfterWaitTargetLosesRequiredPrivacy(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
+
+	groupID := int64(48020)
+	const (
+		targetID   = int64(48021)
+		fallbackID = int64(48022)
+	)
+	stale := openAIWaitRecheckAccount(targetID, 4, 1)
+	stale.GroupIDs = []int64{groupID}
+	stale.Extra["privacy_mode"] = PrivacyModeTrainingOff
+	ineligible := stale
+	ineligible.Extra = map[string]any{
+		AccountExtraAffinityConcurrencyReserve: 1,
+	}
+	fallback := openAIWaitRecheckAccount(fallbackID, 3, 1)
+	fallback.GroupIDs = []int64{groupID}
+	fallback.Extra["privacy_mode"] = PrivacyModeTrainingOff
+
+	concurrencyCache := &openAIWaitRecheckConcurrencyCache{acquireResult: true}
+	settingRepo := &openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
+		openAIAdvancedSchedulerSettingKey:                      "false",
+		SettingKeyOpenAIPrioritySaturationEnabled:              "true",
+		SettingKeyOpenAIOAuthSchedulingRateMultiplier:          "1",
+		SettingKeyOpenAILowUpstreamRatePriorityEnabled:         "false",
+		SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled: "false",
+	}}
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerGroupAwareOpenAIAccountRepo{
+			schedulerTestOpenAIAccountRepo: schedulerTestOpenAIAccountRepo{
+				accounts: []Account{ineligible, fallback},
+			},
+		},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+		rateLimitService: &RateLimitService{
+			settingService: NewSettingService(settingRepo, &config.Config{}),
+		},
+	}
+
+	group := &Group{
+		ID:                groupID,
+		Platform:          PlatformOpenAI,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, group)
+	initialReleaseCount := 0
+	req := OpenAIAccountScheduleRequest{
+		GroupID:           &groupID,
+		Platform:          PlatformOpenAI,
+		RequirePrivacySet: true,
+	}
+	selection := attachOpenAISelectionRequest(&AccountSelectionResult{
+		Account:     &stale,
+		Acquired:    true,
+		ReleaseFunc: func() { initialReleaseCount++ },
+		WaitPlan: &AccountWaitPlan{
+			AccountID:      targetID,
+			MaxConcurrency: stale.GeneralConcurrencyLimit(),
+			Timeout:        time.Second,
+			MaxWaiting:     2,
+		},
+	}, req)
+
+	finalized, err := svc.FinalizeAcquiredOpenAISelection(ctx, &groupID, "", selection)
+
+	require.NoError(t, err)
+	require.NotNil(t, finalized)
+	require.True(t, finalized.Acquired)
+	require.Equal(t, fallbackID, finalized.Account.ID)
 	require.Equal(t, 1, initialReleaseCount)
 	require.Equal(t, []int{fallback.GeneralConcurrencyLimit()}, concurrencyCache.acquireLimits)
 

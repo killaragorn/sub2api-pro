@@ -398,7 +398,7 @@ openai_priority_saturation_enabled
 | `false` | `true` | `priority_saturation` |
 | `true` | `true` | 非法配置 |
 
-后端设置更新必须基于更新后的完整有效值校验两个开关互斥，不能只校验本次 payload 中出现的字段。新字段缺失时默认为 `false`，因此升级不会改变现有 advanced scheduler 行为。
+后端设置更新必须基于更新后的完整有效值校验两个开关互斥，不能只校验本次 payload 中出现的字段。新安装默认启用 `priority_saturation`；升级迁移遇到缺失字段时，仅当现有 advanced scheduler 已显式开启才写入 `false`，其他情况写入 `true`，因此不会产生两个调度器同时开启的状态。
 
 正常配置不得同时开启两个开关。为防手工改数据库、旧管理端或滚动升级产生脏状态，运行时检测到二者同时为 `true` 时必须记录高优先级错误并确定性选择 `priority_saturation`，不能在请求之间随机分派；管理 API 和新 UI 仍阻止保存该状态。
 
@@ -466,7 +466,7 @@ OpenAI 顺序饱和调度
 
 ### 8.4 UI 状态和提示
 
-- Settings API 类型增加独立布尔字段 `openai_priority_saturation_enabled`，表单默认值为 `false`；
+- Settings API 类型增加独立布尔字段 `openai_priority_saturation_enabled`，表单默认值为 `true`；兼容旧响应时若 advanced scheduler 已开启则回落为 `false`；
 - Account 类型通过现有 `extra` 写入 `affinity_concurrency_reserve`，列表 DTO 同时暴露归一化后的只读值；
 - 新开关开启时显示非阻断告警：`R=0` 的账号没有亲和保护，`Concurrency<=0` 的前置账号不会自然扩散；
 - 两个调度开关、C、R、G 的名称和帮助文本必须覆盖项目现有语言，并在移动端不横向溢出；
@@ -614,7 +614,7 @@ backend/internal/service/openai_priority_saturation_scheduler_test.go
 
 ### 10.8 管理 UI
 
-- 旧设置缺少新字段时，`openai_priority_saturation_enabled=false`，现有 advanced scheduler 行为不变；
+- 旧设置缺少新字段时，advanced scheduler 已开启则迁移为 `openai_priority_saturation_enabled=false`，否则迁移为 `true`；
 - 两个开关都关闭时使用 legacy selector；
 - 仅现有 advanced 开关开启时使用 `weighted_topk`，其 TopK/权值 UI 保持原样；
 - 仅新开关开启时使用 `priority_saturation`，独立卡片显示顺序、C/R/G、溢出语义和账号管理入口；
@@ -641,11 +641,11 @@ backend/internal/service/openai_priority_saturation_scheduler_test.go
 
 共享 sticky key 和账号并发集合时，禁止直接把旧实例与 owner/reserve-aware 新实例混合 canary。安全发布必须分两步：
 
-1. 先发布兼容版本：实现原子 owner 接口和两级槽位 helper，让 `weighted_topk`、旧选择器及所有 OpenAI handler 都按请求身份使用 `C/G`；新的 `openai_priority_saturation_enabled` 保持 `false`，所有账号的 `affinity_concurrency_reserve` 暂时保持 `0`；
+1. 发布兼容版本：实现原子 owner 接口和两级槽位 helper，让 `weighted_topk`、旧选择器及所有 OpenAI handler 都按请求身份使用 `C/G`；迁移仅在 advanced scheduler 未开启时默认启用 `openai_priority_saturation_enabled`，所有账号的 `affinity_concurrency_reserve` 暂时保持 `0`；
 2. 把兼容版本部署到所有实例，确认集群中不存在普通 `SET` owner 或始终以 `Account.Concurrency` 获取普通请求的旧实例；
 3. 通过 10.7 节混合策略并发测试，并观察 claim 冲突、保护槽位命中、general 拒绝、错误槽位释放和 CAS 失败指标；
 4. 为目标账号配置小规模 `affinity_concurrency_reserve`，验证历史会话可以使用保护区且普通容量下降符合预期；
-5. 确认现有 `openai_advanced_scheduler_enabled=false` 后，才在 canary 实例或低峰窗口开启独立的 `openai_priority_saturation_enabled`；
+5. 确认现有 `openai_advanced_scheduler_enabled=false`，并在 canary 实例或低峰窗口验证迁移已启用独立的 `openai_priority_saturation_enabled`；
 6. 观察各账号普通区、保护区、临时溢出、sticky 等待、上游错误和额度下降速度；
 7. 确认顺序及会话亲和均符合预期后扩大范围。
 

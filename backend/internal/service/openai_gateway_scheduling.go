@@ -877,7 +877,11 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		}()
 	}
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
-	selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, "", true)
+	requirePrivacySet, err := s.resolveOpenAISchedulingRequirePrivacySet(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, "", true, requirePrivacySet)
 	if err != nil {
 		return nil, err
 	}
@@ -889,11 +893,12 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		ExcludedIDs:          excludedIDs,
 		StickyAccountID:      selectionSessionOwnerID(selection),
 		UseUpstreamTokenCost: true,
+		RequirePrivacySet:    requirePrivacySet,
 	}
 	return s.finalizeLegacyOpenAISelection(ctx, req, selection)
 }
 
-func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, useUpstreamTokenCost bool) (*AccountSelectionResult, error) {
+func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, useUpstreamTokenCost bool, requirePrivacySet bool) (*AccountSelectionResult, error) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
@@ -921,6 +926,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		RequiredCapability:   requiredCapability,
 		StickyAccountID:      stickyAccountID,
 		UseUpstreamTokenCost: useUpstreamTokenCost,
+		RequirePrivacySet:    requirePrivacySet,
 	}
 	prepareSelection := func(selection *AccountSelectionResult, err error) (*AccountSelectionResult, error) {
 		if err != nil || selection == nil {
@@ -943,9 +949,21 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return attachOpenAISelectionRequest(selection, request), nil
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate)
-		if err != nil {
-			return nil, err
+		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
+		var account *Account
+		for {
+			selectedAccount, selectErr := s.selectAccountForModelWithExclusions(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate)
+			if selectErr != nil {
+				return nil, selectErr
+			}
+			account = selectedAccount
+			if !requirePrivacySet || account.IsPrivacySet() {
+				break
+			}
+			if effectiveExcludedIDs == nil {
+				effectiveExcludedIDs = make(map[int64]struct{})
+			}
+			effectiveExcludedIDs[account.ID] = struct{}{}
 		}
 		limit := account.ConcurrencyLimitForAffinity(stickyAccountID > 0 && stickyAccountID == account.ID)
 		result, err := s.tryAcquireAccountSlot(ctx, account.ID, limit)
@@ -996,7 +1014,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
-				clearSticky := shouldClearStickySession(account, requestedModel)
+				clearSticky := shouldClearStickySession(account, requestedModel) ||
+					(requirePrivacySet && !account.IsPrivacySet())
 				if clearSticky {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash, accountID)
 				}
@@ -1005,6 +1024,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					if account == nil {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash, accountID)
 					} else if !s.openAIAccountMatchesSchedulingGroup(account, groupID) {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash, accountID)
+					} else if requirePrivacySet && !account.IsPrivacySet() {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash, accountID)
 					} else if s.isOpenAIAccountRequestRuntimeBlocked(account, requestedModel) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash, accountID)
@@ -1059,6 +1080,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
 		if !isOpenAICompatibleAccountEligibleForRequest(ctx, acc, platform, requestedModel, false, requiredCapability) {
+			continue
+		}
+		if requirePrivacySet && !acc.IsPrivacySet() {
 			continue
 		}
 		if !parentHealthyForShadow(acc, parentLookupL2) {
@@ -1164,6 +1188,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if fresh == nil {
 				continue
 			}
+			if requirePrivacySet && !fresh.IsPrivacySet() {
+				continue
+			}
 			if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
 				continue
 			}
@@ -1199,6 +1226,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, groupID, platform, requestedModel, requireCompact, requiredCapability)
 			if fresh == nil {
+				continue
+			}
+			if requirePrivacySet && !fresh.IsPrivacySet() {
 				continue
 			}
 			if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
@@ -1246,6 +1276,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, groupID, platform, requestedModel, requireCompact, requiredCapability)
 		if fresh == nil {
+			continue
+		}
+		if requirePrivacySet && !fresh.IsPrivacySet() {
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
