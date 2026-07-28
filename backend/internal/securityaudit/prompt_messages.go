@@ -43,16 +43,28 @@ func decodePromptAuditPayload(value string) (promptAuditTransientPayload, error)
 	return payload, nil
 }
 
-func buildPromptScanChunks(snapshot PromptSnapshot, endpoints []ActiveEndpoint, inputLimit int) []PromptScanChunk {
-	if promptAuditPoolUsesStructuredMessages(endpoints) && len(snapshot.AuditMessages) > 0 {
-		return splitPromptAuditMessages(snapshot.AuditMessages, inputLimit)
+func buildPromptScanChunks(snapshot PromptSnapshot, endpoints []ActiveEndpoint, inputLimit int) ([]PromptScanChunk, error) {
+	if promptAuditPoolUsesStructuredMessages(endpoints) {
+		messages := snapshot.AuditMessages
+		if len(messages) == 0 && strings.TrimSpace(snapshot.ScanText) != "" {
+			legacyText := strings.ReplaceAll(snapshot.ScanText, promptAuditPrioritySeparator, "\n\n")
+			messages = []PromptAuditMessage{{Role: "user", Content: legacyText}}
+		}
+		chunk, err := buildGroqPromptScanChunk(messages, inputLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(chunk.Messages) == 0 {
+			return nil, nil
+		}
+		return []PromptScanChunk{chunk}, nil
 	}
 	textChunks := SplitRunes(snapshot.ScanText, inputLimit)
 	chunks := make([]PromptScanChunk, 0, len(textChunks))
 	for _, textChunk := range textChunks {
 		chunks = append(chunks, PromptScanChunk{Text: textChunk})
 	}
-	return chunks
+	return chunks, nil
 }
 
 func splitPromptAuditMessages(messages []PromptAuditMessage, limit int) []PromptScanChunk {

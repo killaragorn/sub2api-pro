@@ -253,6 +253,22 @@ Prompt Audit 在现有 Qwen3Guard OpenAI-compatible 节点之外，增加了 Gro
   扫描请求或该次审计事件；
 - 提取后的消息和同一消息内的文本块严格按照客户端请求中的原始顺序组装，不再把最后一条
   `user` 消息提前；Groq 请求保留原始角色顺序，Qwen 的扁平文本也使用相同的源顺序；
+- Groq Safeguard 不再按字符分片：一个审计任务只组装一个会话级请求，并把节点的
+  `input_limit` 解释为“单次会话内容 Token 预算”；纯 Qwen3Guard 池仍按
+  `input_limit` 指定的 Unicode 字符数分片；
+- Groq 会话预算使用 `o200k_base` 精确计数。最新 `user` 消息优先级最高，同时优先保留
+  会话开头和最近消息；超大消息保留首尾，中间写入省略字符数、原始 Token 数和完整
+  SHA-256 标记，最终发送顺序仍与原请求一致；
+- 仅在同一次请求内对同角色、内容完全一致且至少 `256` Token 的大消息去重，重复位置写入
+  来源序号和 SHA-256 标记；不跨请求缓存审核结论，避免把一次裁剪结果错误复用到另一会话；
+- Groq 结构化输出上限从 `1024` 降为 `256` Token。每个节点新增 `tpm_limit`，默认
+  `8000`；发送前按完整 JSON 请求 Token 加 `256` 输出预留计费，相同 API Key 的节点共享
+  本进程内按凭据哈希隔离的 Token Bucket。预算不足时在本地等待，不先撞 Groq `429`；
+- Groq 异步新任务最多执行一次，节点池内仍保留按优先级故障切换，但失败任务不会再次整轮
+  重试并重复消耗 TPM。Worker 在本地 TPM 等待和模型调用期间每 `30s` 刷新数据库租约；
+- 如果完整 system policy、JSON Schema、会话内容和输出预留之和已经大于 `tpm_limit`，
+  请求不会发送，并记录 `prompt_guard_tpm_budget_exceeded`；此时应缩短自定义审核策略或
+  会话 Token 预算，而不是盲目提高超过实际 Groq 配额的 TPM 配置；
 - 审计记录包含 scanner backend、版本、endpoint、policy/config version 和证据元数据；
 - 管理端主页面采用与内容审核一致的全宽、高信息密度布局，集中展示运行概览、Worker 与
   持久队列、Guard 指标、依赖探测、最近错误和审计事件，配置入口使用相同风格的弹窗；
@@ -262,6 +278,8 @@ Prompt Audit 在现有 Qwen3Guard OpenAI-compatible 节点之外，增加了 Gro
 - 配置弹窗按“模型服务 / 审核策略 / 范围与风险 / 运行参数”分区，节点编辑、凭据状态和连接测试在模型服务页完成；
 - 管理端可选择 Qwen3Guard 或 Groq Safeguard，并显示相应默认值与说明；Groq 模型固定为
   `openai/gpt-oss-safeguard-20b`，启用节点时必须配置 Groq API Key；
+- 节点高级设置按协议显示真实单位：Qwen 为“每片 Unicode 字符上限”，Groq 为“单次会话
+  内容 Token 预算”和“同 Key TPM 上限”；节点列表同步展示相应摘要；
 - 管理端“审核策略”Tab 提供全局 Groq Safeguard Policy 编辑、恢复默认和最终 system
   Prompt 预览；自定义正文只负责分类标准、风险边界和示例，空值使用内置默认策略；
 - Groq 的安全前言、启用类别定义、消息角色封装和 JSON Schema 输出契约由后端固定，
@@ -276,6 +294,8 @@ Prompt Audit 在现有 Qwen3Guard OpenAI-compatible 节点之外，增加了 Gro
 主要实现：
 
 - `backend/internal/securityaudit/prompt_gpt_oss_safeguard.go`
+- `backend/internal/securityaudit/prompt_groq_budget.go`
+- `backend/internal/securityaudit/prompt_groq_rate_limit.go`
 - `backend/internal/securityaudit/prompt_qwen3guard.go`
 - `backend/internal/securityaudit/prompt_config.go`
 - `backend/internal/securityaudit/prompt_snapshot.go`

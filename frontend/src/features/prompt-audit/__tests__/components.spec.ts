@@ -21,7 +21,7 @@ const PaginationStub = defineComponent({ props: ['total', 'page', 'pageSize'], e
 
 const endpoint = (): PromptAuditEndpointDraft => ({
   id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
-  model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true,
+  model: 'guard-model', timeout_ms: 3000, input_limit: 4000, tpm_limit: 0, enabled: true,
   has_token: true, token_status: 'configured', token: '', clear_token: false,
 })
 
@@ -122,6 +122,8 @@ describe('Prompt Audit components', () => {
     expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.model"]').element.value).toBe('openai/gpt-oss-safeguard-20b')
     expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.model"]').attributes()).toHaveProperty('readonly')
     expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.timeout"]').element.value).toBe('10000')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.sessionTokenBudget"]').element.value).toBe('4000')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.tpmLimit"]').element.value).toBe('8000')
     expect(wrapper.find('[data-test="groq-safeguard-notice"]').exists()).toBe(true)
     expect(wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.apiKey"]').attributes('placeholder')).toBe('gsk_...')
     expect(wrapper.get('[data-test="endpoint-editor-error"]').text()).toBe('admin.promptAudit.pool.validation.groqCredential')
@@ -134,6 +136,7 @@ describe('Prompt Audit components', () => {
       protocol: 'groq_safeguard',
       base_url: 'https://api.groq.com/openai',
       model: 'openai/gpt-oss-safeguard-20b',
+      tpm_limit: 8000,
       timeout_ms: 10000,
       token: 'new-groq-key',
       clear_token: false,

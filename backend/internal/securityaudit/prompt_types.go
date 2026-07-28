@@ -18,6 +18,7 @@ const (
 	ErrorCodeConfigConflict    = "prompt_audit_config_conflict"
 	ErrorCodeConfigUnavailable = "prompt_audit_config_unavailable"
 	ErrorCodeRequiresEnabled   = "prompt_guard_requires_audit_enabled"
+	ErrorCodeTPMBudgetExceeded = "prompt_guard_tpm_budget_exceeded"
 
 	EndpointProtocolQwen3Guard    = "openai_compatible"
 	EndpointProtocolGroqSafeguard = "groq_safeguard"
@@ -132,8 +133,13 @@ type PromptAuditMessage struct {
 }
 
 type PromptScanChunk struct {
-	Text     string
-	Messages []PromptAuditMessage
+	Text                     string
+	Messages                 []PromptAuditMessage
+	OriginalTokenCount       int
+	RetainedTokenCount       int
+	TruncatedMessageCount    int
+	DeduplicatedMessageCount int
+	OmittedMessageCount      int
 }
 
 func (c PromptScanChunk) RuneCount() int {

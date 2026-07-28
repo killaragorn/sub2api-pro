@@ -71,7 +71,14 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	evalCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	inputLimit := minimumInputLimit(endpoints)
-	chunks := buildPromptScanChunks(snapshot, endpoints, inputLimit)
+	chunks, err := buildPromptScanChunks(snapshot, endpoints, inputLimit)
+	if err != nil {
+		if g.metrics != nil {
+			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
+		}
+		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
+		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
+	}
 	if len(chunks) == 0 {
 		if g.metrics != nil {
 			g.metrics.Observe(DecisionAllow, g.clock.Now().Sub(start))
@@ -85,7 +92,10 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{
 			"chunk_index": index + 1, "chunk_total": len(chunks),
 			"chunk_chars": chunk.RuneCount(), "input_chars": snapshot.PromptLength, "input_limit": inputLimit,
-			"status": "started",
+			"original_tokens": chunk.OriginalTokenCount, "retained_tokens": chunk.RetainedTokenCount,
+			"truncated_messages": chunk.TruncatedMessageCount, "deduplicated_messages": chunk.DeduplicatedMessageCount,
+			"omitted_messages": chunk.OmittedMessageCount,
+			"status":           "started",
 		}))
 		result, err := g.scanChunk(evalCtx, cfg, endpoints, chunk)
 		if err != nil {
@@ -93,7 +103,10 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 			LogWarn(EventChunkFailed, mergeLogFields(baseFields, map[string]any{
 				"chunk_index": index + 1, "chunk_total": len(chunks),
 				"chunk_chars": chunk.RuneCount(), "input_chars": snapshot.PromptLength, "input_limit": inputLimit,
-				"latency_ms": g.clock.Now().Sub(chunkStarted).Milliseconds(), "error_code": code, "status": "failed",
+				"original_tokens": chunk.OriginalTokenCount, "retained_tokens": chunk.RetainedTokenCount,
+				"truncated_messages": chunk.TruncatedMessageCount, "deduplicated_messages": chunk.DeduplicatedMessageCount,
+				"omitted_messages": chunk.OmittedMessageCount,
+				"latency_ms":       g.clock.Now().Sub(chunkStarted).Milliseconds(), "error_code": code, "status": "failed",
 			}))
 			kind := DecisionUnavailable
 			if code == ErrorCodeInvalidResponse {
@@ -114,6 +127,9 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		LogInfo(EventChunkCompleted, mergeLogFields(baseFields, map[string]any{
 			"chunk_index": index + 1, "chunk_total": len(chunks),
 			"chunk_chars": chunk.RuneCount(), "input_chars": snapshot.PromptLength, "input_limit": inputLimit,
+			"original_tokens": chunk.OriginalTokenCount, "retained_tokens": chunk.RetainedTokenCount,
+			"truncated_messages": chunk.TruncatedMessageCount, "deduplicated_messages": chunk.DeduplicatedMessageCount,
+			"omitted_messages":  chunk.OmittedMessageCount,
 			"guard_endpoint_id": result.GuardEndpointID, "action": result.Action,
 			"latency_ms": g.clock.Now().Sub(chunkStarted).Milliseconds(), "status": "completed",
 		}))

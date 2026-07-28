@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const promptAuditLeaseRefreshInterval = 30 * time.Second
+
 type WorkerRuntime struct {
 	active           atomic.Int64
 	processed        atomic.Int64
@@ -154,21 +156,33 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		return r.finishFailure(ctx, job, &GuardError{Code: "no_enabled_endpoint", Retryable: true})
 	}
 	inputLimit := minimumInputLimit(endpoints)
-	chunks := buildPromptScanChunks(job.Snapshot, endpoints, inputLimit)
+	chunks, err := buildPromptScanChunks(job.Snapshot, endpoints, inputLimit)
+	if err != nil {
+		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeUnavailable, Retryable: false, Cause: err})
+	}
 	results := make([]*NormalizedResult, 0, len(chunks))
 	started := r.clock.Now()
 	for index, chunk := range chunks {
-		if err := r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, r.clock.Now()); err != nil {
-			return err
-		}
 		chunkStarted := r.clock.Now()
-		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "chunk_chars": chunk.RuneCount(), "input_chars": job.Snapshot.PromptLength, "input_limit": inputLimit, "status": "started"}))
-		result, scanErr := scanWithFailover(ctx, r.scanner, cfg.Scanners, endpoints, chunk, r.metrics)
+		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{
+			"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks),
+			"chunk_chars": chunk.RuneCount(), "input_chars": job.Snapshot.PromptLength, "input_limit": inputLimit,
+			"original_tokens": chunk.OriginalTokenCount, "retained_tokens": chunk.RetainedTokenCount,
+			"truncated_messages": chunk.TruncatedMessageCount, "deduplicated_messages": chunk.DeduplicatedMessageCount,
+			"omitted_messages": chunk.OmittedMessageCount, "status": "started",
+		}))
+		result, scanErr, leaseErr := r.scanWithLeaseRefresh(ctx, job, cfg.Scanners, endpoints, chunk)
+		if leaseErr != nil {
+			return leaseErr
+		}
 		if scanErr != nil {
 			LogWarn(EventChunkFailed, mergeLogFields(baseFields, map[string]any{
 				"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks),
 				"chunk_chars": chunk.RuneCount(), "input_chars": job.Snapshot.PromptLength,
-				"input_limit": inputLimit, "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(),
+				"original_tokens": chunk.OriginalTokenCount, "retained_tokens": chunk.RetainedTokenCount,
+				"truncated_messages": chunk.TruncatedMessageCount, "deduplicated_messages": chunk.DeduplicatedMessageCount,
+				"omitted_messages": chunk.OmittedMessageCount,
+				"input_limit":      inputLimit, "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(),
 				"error_code": guardErrorCode(scanErr), "status": "failed",
 			}))
 			r.observeAsyncFailure(scanErr, r.clock.Now().Sub(started))
@@ -208,6 +222,68 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		LogWarn(EventFindingRecorded, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "event_id": event.ID, "decision": aggregated.Decision, "risk_level": aggregated.RiskLevel, "action": aggregated.Action, "guard_endpoint_id": aggregated.GuardEndpointID, "status": "recorded"}))
 	}
 	return nil
+}
+
+func (r *Runner) scanWithLeaseRefresh(
+	ctx context.Context,
+	job *Job,
+	scanners []string,
+	endpoints []ActiveEndpoint,
+	chunk PromptScanChunk,
+) (*NormalizedResult, error, error) {
+	if err := r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, r.clock.Now()); err != nil {
+		return nil, nil, err
+	}
+	scanCtx, cancelScan := context.WithCancel(ctx)
+	defer cancelScan()
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	leaseErr := make(chan error, 1)
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			close(stop)
+			cancelScan()
+			<-stopped
+		})
+	}
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(promptAuditLeaseRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				cancelScan()
+				return
+			case <-ticker.C:
+				refreshCtx, cancelRefresh := context.WithTimeout(ctx, 5*time.Second)
+				err := r.repo.RefreshLease(refreshCtx, job.ID, job.ClaimVersion, r.clock.Now())
+				cancelRefresh()
+				if err == nil {
+					continue
+				}
+				select {
+				case leaseErr <- err:
+				default:
+				}
+				cancelScan()
+				return
+			}
+		}
+	}()
+	defer cleanup()
+
+	result, scanErr := scanWithFailover(scanCtx, r.scanner, scanners, endpoints, chunk, r.metrics)
+	cleanup()
+	select {
+	case err := <-leaseErr:
+		return nil, nil, err
+	default:
+		return result, scanErr, nil
+	}
 }
 
 func (r *Runner) observeAsyncFailure(err error, latency time.Duration) {

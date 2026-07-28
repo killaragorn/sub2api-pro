@@ -155,6 +155,8 @@ func stableErrorMessage(code string) string {
 		return "Prompt Audit dependency is unavailable"
 	case ErrorCodeInvalidResponse:
 		return "Prompt Guard returned an invalid response"
+	case ErrorCodeTPMBudgetExceeded:
+		return "Prompt Guard request exceeds the configured TPM budget"
 	case "queue_full", "queue_admission_busy":
 		return "Prompt Audit queue is unavailable"
 	case "worker_panic":

@@ -217,10 +217,14 @@ func isElevatedControversial(category string) bool {
 }
 
 type OpenAICompatibleScanner struct {
-	clients sync.Map
+	clients     sync.Map
+	limiterOnce sync.Once
+	groqLimiter *groqTPMLimiter
 }
 
-func NewOpenAICompatibleScanner() *OpenAICompatibleScanner { return &OpenAICompatibleScanner{} }
+func NewOpenAICompatibleScanner() *OpenAICompatibleScanner {
+	return &OpenAICompatibleScanner{groqLimiter: newGroqTPMLimiter()}
+}
 
 func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpoint, chunk string, enabledScanners []string) (*NormalizedResult, error) {
 	return s.ScanStructured(ctx, endpoint, PromptScanChunk{Text: chunk}, enabledScanners)
@@ -253,6 +257,20 @@ func (s *OpenAICompatibleScanner) ScanStructured(ctx context.Context, endpoint A
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+	}
+	if endpoint.Protocol == EndpointProtocolGroqSafeguard {
+		tokenCost, countErr := estimateGroqRequestTokens(body)
+		if countErr != nil {
+			return nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: false, Cause: countErr}
+		}
+		if err := s.groqTPMLimiter().acquire(
+			ctx,
+			groqCredentialBucketKey(endpoint),
+			endpoint.TPMLimit,
+			tokenCost,
+		); err != nil {
+			return nil, err
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
 	if err != nil {
@@ -303,6 +321,15 @@ func (s *OpenAICompatibleScanner) ScanStructured(ctx context.Context, endpoint A
 	result.GuardEndpointID = endpoint.ID
 	result.ScannerVersion = endpoint.Model
 	return result, nil
+}
+
+func (s *OpenAICompatibleScanner) groqTPMLimiter() *groqTPMLimiter {
+	s.limiterOnce.Do(func() {
+		if s.groqLimiter == nil {
+			s.groqLimiter = newGroqTPMLimiter()
+		}
+	})
+	return s.groqLimiter
 }
 
 func (s *OpenAICompatibleScanner) clientFor(endpoint ActiveEndpoint) (*http.Client, error) {

@@ -240,7 +240,9 @@ import {
   configToDraft,
   draftFingerprint,
   emptyEventFilters,
+  MAX_GROQ_TPM_LIMIT,
   MAX_SAFEGUARD_POLICY_LENGTH,
+  MIN_GROQ_TPM_LIMIT,
   MIN_SAFEGUARD_POLICY_LENGTH,
 } from './viewModel'
 
@@ -304,7 +306,18 @@ const configValidationMessage = computed(() => {
       return t('admin.promptAudit.settings.validation.endpointTimeout', { name })
     }
     if (endpoint.input_limit < 128 || endpoint.input_limit > 100000) {
-      return t('admin.promptAudit.settings.validation.endpointInputLimit', { name })
+      return t(
+        endpoint.protocol === 'groq_safeguard'
+          ? 'admin.promptAudit.settings.validation.endpointTokenBudget'
+          : 'admin.promptAudit.settings.validation.endpointInputLimit',
+        { name },
+      )
+    }
+    if (
+      endpoint.protocol === 'groq_safeguard' &&
+      (endpoint.tpm_limit < MIN_GROQ_TPM_LIMIT || endpoint.tpm_limit > MAX_GROQ_TPM_LIMIT)
+    ) {
+      return t('admin.promptAudit.settings.validation.endpointTPMLimit', { name })
     }
     if (
       value.enabled &&

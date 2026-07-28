@@ -70,18 +70,19 @@ type fakeJobRepository struct {
 	retryErr    error
 	failErr     error
 
-	createdSnapshot PromptSnapshot
-	markedCode      string
-	completedResult *NormalizedResult
-	completedStore  bool
-	completeCount   int
-	eventCount      int
-	retryAt         time.Time
-	retryCode       string
-	retried         int
-	failedCode      string
-	failed          int
-	refreshes       int
+	createdSnapshot    PromptSnapshot
+	createdMaxAttempts int
+	markedCode         string
+	completedResult    *NormalizedResult
+	completedStore     bool
+	completeCount      int
+	eventCount         int
+	retryAt            time.Time
+	retryCode          string
+	retried            int
+	failedCode         string
+	failed             int
+	refreshes          int
 
 	claimQueue []*Job
 
@@ -97,11 +98,12 @@ func (r *fakeJobRepository) record(value string) {
 	}
 }
 
-func (r *fakeJobRepository) CreateStagingWithCapacity(_ context.Context, snapshot PromptSnapshot, _ int64, _, _ int) (*Job, error) {
+func (r *fakeJobRepository) CreateStagingWithCapacity(_ context.Context, snapshot PromptSnapshot, _ int64, maxAttempts, _ int) (*Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.record("create_staging")
 	r.createdSnapshot = snapshot
+	r.createdMaxAttempts = maxAttempts
 	if r.createErr != nil {
 		return nil, r.createErr
 	}
@@ -290,6 +292,44 @@ func TestEnqueuerStagingPayloadPublishProtocolAndFailureCleanup(t *testing.T) {
 		require.Equal(t, "queue_publish_failed", repo.markedCode)
 		require.NotContains(t, payload.values, int64(43))
 	})
+}
+
+func TestEnqueuerSetsProtocolSpecificMaxAttempts(t *testing.T) {
+	tests := []struct {
+		name        string
+		protocol    string
+		model       string
+		maxAttempts int
+	}{
+		{
+			name:        "qwen keeps queue retries",
+			protocol:    EndpointProtocolQwen3Guard,
+			model:       DefaultGuardModel,
+			maxAttempts: defaultPromptAuditMaxAttempts,
+		},
+		{
+			name:        "groq runs one queue attempt",
+			protocol:    EndpointProtocolGroqSafeguard,
+			model:       DefaultGroqSafeguardModel,
+			maxAttempts: groqPromptAuditMaxAttempts,
+		},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := asyncConfig()
+			cfg.Endpoints[0].Protocol = tt.protocol
+			cfg.Endpoints[0].Model = tt.model
+			repo := &fakeJobRepository{createJob: &Job{ID: int64(60 + index)}}
+			payload := &fakePayloadStore{values: map[int64]string{}}
+
+			require.NoError(t, NewEnqueuer(
+				&fakeConfigStore{cfg: cfg, active: true},
+				repo,
+				payload,
+			).Enqueue(context.Background(), asyncRequest()))
+			require.Equal(t, tt.maxAttempts, repo.createdMaxAttempts)
+		})
+	}
 }
 
 func TestEnqueuerGPTOSSSafeguardExcludesToolOutputAndAttachments(t *testing.T) {

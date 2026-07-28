@@ -39,6 +39,49 @@ func TestConfigRejectsBlockingWithoutAudit(t *testing.T) {
 	require.Error(t, validateStorageConfig(storage))
 }
 
+func TestGroqTPMLimitDefaultsAndFlowsAcrossConfigViews(t *testing.T) {
+	raw := `{
+		"strategy":"priority",
+		"worker_count":1,
+		"queue_capacity":10,
+		"scanners":["pii"],
+		"all_groups":true,
+		"endpoints":[{
+			"id":"groq",
+			"name":"Groq",
+			"protocol":"groq_safeguard",
+			"base_url":"https://api.groq.com/openai",
+			"model":"openai/gpt-oss-safeguard-20b",
+			"timeout_ms":1000,
+			"input_limit":4000
+		}]
+	}`
+	storage, err := ParseStorageConfig(raw)
+	require.NoError(t, err)
+	require.Equal(t, DefaultGroqTPMLimit, storage.Endpoints[0].TPMLimit)
+	require.Equal(t, DefaultGroqTPMLimit, PublicFromStorage(storage, true).Endpoints[0].TPMLimit)
+	active, err := ActiveFromStorage(storage, true, prefixEncryptor{})
+	require.NoError(t, err)
+	require.Equal(t, DefaultGroqTPMLimit, active.Endpoints[0].TPMLimit)
+
+	manager := &ConfigManager{encryptor: prefixEncryptor{}}
+	next, err := manager.buildNextStorage(storage, UpdateConfigRequest{
+		ExpectedConfigVersion: 1,
+		Strategy:              "priority",
+		WorkerCount:           1,
+		QueueCapacity:         10,
+		Scanners:              []string{"pii"},
+		AllGroups:             true,
+		Endpoints: []UpdateEndpoint{{
+			ID: "groq", Name: "Groq", Protocol: EndpointProtocolGroqSafeguard,
+			BaseURL: "https://api.groq.com/openai", Model: DefaultGroqSafeguardModel,
+			TimeoutMS: 1000, InputLimit: 4000,
+		}},
+	}, 1)
+	require.NoError(t, err)
+	require.Equal(t, DefaultGroqTPMLimit, next.Endpoints[0].TPMLimit)
+}
+
 func TestPublicConfigNeverMarshalsToken(t *testing.T) {
 	storage := DefaultStorageConfig()
 	storage.Endpoints = []StorageEndpoint{{ID: "one", Name: "One", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8080", Model: DefaultGuardModel, TokenCiphertext: "GUARD_TOKEN_CANARY_SECRET", TimeoutMS: 1000, InputLimit: 1000, Enabled: true}}

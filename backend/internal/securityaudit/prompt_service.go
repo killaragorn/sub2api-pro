@@ -354,8 +354,12 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 	if limit == 0 {
 		limit = DefaultInputLimit
 	}
+	tpmLimit := input.TPMLimit
+	if protocol == EndpointProtocolGroqSafeguard && tpmLimit == 0 {
+		tpmLimit = DefaultGroqTPMLimit
+	}
 	storage := storageConfig{Enabled: false, Strategy: "priority", WorkerCount: DefaultWorkerCount, QueueCapacity: DefaultQueueCapacity, Scanners: append([]string(nil), AllScannerIDs...), AllGroups: true,
-		Endpoints: []StorageEndpoint{{ID: strings.TrimSpace(input.ID), Name: strings.TrimSpace(input.Name), Protocol: protocol, BaseURL: baseURL, Model: model, TimeoutMS: timeout, InputLimit: limit}}}
+		Endpoints: []StorageEndpoint{{ID: strings.TrimSpace(input.ID), Name: strings.TrimSpace(input.Name), Protocol: protocol, BaseURL: baseURL, Model: model, TimeoutMS: timeout, InputLimit: limit, TPMLimit: tpmLimit}}}
 	if storage.Endpoints[0].ID == "" {
 		storage.Endpoints[0].ID = "probe"
 	}
@@ -365,7 +369,7 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 	if err := validateStorageConfig(storage); err != nil {
 		return ActiveEndpoint{}, false, err
 	}
-	return ActiveEndpoint{ID: storage.Endpoints[0].ID, Name: storage.Endpoints[0].Name, Protocol: protocol, BaseURL: baseURL, Model: model, Token: token, TimeoutMS: timeout, InputLimit: limit, Enabled: true}, token != "", nil
+	return ActiveEndpoint{ID: storage.Endpoints[0].ID, Name: storage.Endpoints[0].Name, Protocol: protocol, BaseURL: baseURL, Model: model, Token: token, TimeoutMS: timeout, InputLimit: limit, TPMLimit: tpmLimit, Enabled: true}, token != "", nil
 }
 
 func (s *PromptService) finishProbe(id string, started time.Time, result ProbeResult) ProbeResult {

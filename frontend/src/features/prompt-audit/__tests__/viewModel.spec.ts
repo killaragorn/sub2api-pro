@@ -9,6 +9,7 @@ import {
   eventFilterPayload,
   hasExplicitDeleteRange,
   DEFAULT_GROQ_SAFEGUARD_MODEL,
+  DEFAULT_GROQ_TPM_LIMIT,
   SCANNER_CATALOG,
 } from '../viewModel'
 
@@ -27,7 +28,7 @@ const config = (): PromptAuditConfig => ({
   group_ids: [],
   endpoints: [{
     id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
-    model: 'sileader/qwen3guard:0.6b', timeout_ms: 3000, input_limit: 4000, enabled: true,
+    model: 'sileader/qwen3guard:0.6b', timeout_ms: 3000, input_limit: 4000, tpm_limit: 0, enabled: true,
     has_token: true, token_status: 'configured',
   }],
   config_version: 7,
@@ -68,18 +69,24 @@ describe('Prompt Audit view model', () => {
       base_url: 'https://api.groq.com/openai',
       model: DEFAULT_GROQ_SAFEGUARD_MODEL,
       timeout_ms: 10000,
+      input_limit: 4000,
+      tpm_limit: DEFAULT_GROQ_TPM_LIMIT,
     })
     expect(buildUpdateRequest(draft).endpoints[0]).toMatchObject({
       protocol: 'groq_safeguard',
       model: DEFAULT_GROQ_SAFEGUARD_MODEL,
+      tpm_limit: DEFAULT_GROQ_TPM_LIMIT,
     })
 
     draft.endpoints[0].model = 'wrong-model'
     expect(buildUpdateRequest(draft).endpoints[0].model).toBe(DEFAULT_GROQ_SAFEGUARD_MODEL)
 
     const serverConfig = config()
-    serverConfig.endpoints[0] = { ...serverConfig.endpoints[0], protocol: 'groq_safeguard', model: 'legacy-model' }
-    expect(configToDraft(serverConfig).endpoints[0].model).toBe(DEFAULT_GROQ_SAFEGUARD_MODEL)
+    serverConfig.endpoints[0] = { ...serverConfig.endpoints[0], protocol: 'groq_safeguard', model: 'legacy-model', tpm_limit: 0 }
+    expect(configToDraft(serverConfig).endpoints[0]).toMatchObject({
+      model: DEFAULT_GROQ_SAFEGUARD_MODEL,
+      tpm_limit: DEFAULT_GROQ_TPM_LIMIT,
+    })
   })
 
   it('tracks dirty state from the full normalized save payload', () => {

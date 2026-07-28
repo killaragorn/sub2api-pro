@@ -85,7 +85,7 @@ func TestGroqSafeguardScannerRequestContract(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 		require.Equal(t, DefaultGroqSafeguardModel, payload["model"])
 		require.Equal(t, float64(0), payload["temperature"])
-		require.Equal(t, float64(1024), payload["max_completion_tokens"])
+		require.Equal(t, float64(groqSafeguardMaxCompletionTokens), payload["max_completion_tokens"])
 		require.Equal(t, false, payload["stream"])
 		require.Equal(t, false, payload["include_reasoning"])
 		require.NotContains(t, payload, "max_tokens")

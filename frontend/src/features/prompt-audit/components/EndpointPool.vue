@@ -143,8 +143,22 @@
               <input v-model.number="editing.timeout_ms" class="input w-full" type="number" min="100" max="30000" required :aria-label="t('admin.promptAudit.pool.timeout')" />
             </label>
             <label class="space-y-1.5 text-sm text-gray-700 dark:text-dark-200">
-              <span>{{ t('admin.promptAudit.pool.inputLimit') }}</span>
-              <input v-model.number="editing.input_limit" class="input w-full" type="number" min="128" max="100000" required :aria-label="t('admin.promptAudit.pool.inputLimit')" />
+              <span>{{ inputLimitLabel }}</span>
+              <input v-model.number="editing.input_limit" class="input w-full" type="number" min="128" max="100000" required :aria-label="inputLimitLabel" />
+              <span class="block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ inputLimitHint }}</span>
+            </label>
+            <label v-if="isGroqSafeguard" class="space-y-1.5 text-sm text-gray-700 dark:text-dark-200">
+              <span>{{ t('admin.promptAudit.pool.tpmLimit') }}</span>
+              <input
+                v-model.number="editing.tpm_limit"
+                class="input w-full"
+                type="number"
+                :min="MIN_GROQ_TPM_LIMIT"
+                :max="MAX_GROQ_TPM_LIMIT"
+                required
+                :aria-label="t('admin.promptAudit.pool.tpmLimit')"
+              />
+              <span class="block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.pool.tpmLimitHint') }}</span>
             </label>
           </div>
         </details>
@@ -222,7 +236,7 @@
           <p v-if="probeResults[endpoint.id]" class="mt-1 truncate text-xs" :class="probeResults[endpoint.id].ok ? 'text-emerald-600 dark:text-emerald-300' : 'text-red-600 dark:text-red-300'" :title="probeResults[endpoint.id].message">
             {{ probeResults[endpoint.id].status }} · {{ probeResults[endpoint.id].latency_ms }} ms
           </p>
-          <p v-else class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ endpoint.timeout_ms }} ms · {{ endpoint.input_limit }} chars</p>
+          <p v-else class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ endpointLimitSummary(endpoint) }}</p>
         </div>
 
         <div class="flex items-center justify-end gap-1">
@@ -252,6 +266,9 @@ import {
   cloneData,
   createDefaultEndpoint,
   DEFAULT_GROQ_SAFEGUARD_MODEL,
+  DEFAULT_GROQ_TPM_LIMIT,
+  MAX_GROQ_TPM_LIMIT,
+  MIN_GROQ_TPM_LIMIT,
   PROMPT_AUDIT_PROTOCOLS,
 } from '../viewModel'
 
@@ -271,6 +288,16 @@ const editingIndex = ref(-1)
 const isGroqSafeguard = computed(() => editing.value?.protocol === 'groq_safeguard')
 const editorProbing = computed(() => Boolean(editing.value && props.probingIds.includes(editing.value.id)))
 const editorProbeResult = computed(() => editing.value ? props.probeResults[editing.value.id] : undefined)
+const inputLimitLabel = computed(() => t(
+  isGroqSafeguard.value
+    ? 'admin.promptAudit.pool.sessionTokenBudget'
+    : 'admin.promptAudit.pool.inputLimit',
+))
+const inputLimitHint = computed(() => t(
+  isGroqSafeguard.value
+    ? 'admin.promptAudit.pool.sessionTokenBudgetHint'
+    : 'admin.promptAudit.pool.inputLimitHint',
+))
 const editorError = computed(() => {
   const endpoint = editing.value
   if (!endpoint) return ''
@@ -283,7 +310,17 @@ const editorError = computed(() => {
   }
   if (!validURL(endpoint.base_url)) return t('admin.promptAudit.pool.validation.baseUrl')
   if (endpoint.timeout_ms < 100 || endpoint.timeout_ms > 30000) return t('admin.promptAudit.pool.validation.timeout')
-  if (endpoint.input_limit < 128 || endpoint.input_limit > 100000) return t('admin.promptAudit.pool.validation.inputLimit')
+  if (endpoint.input_limit < 128 || endpoint.input_limit > 100000) {
+    return t(endpoint.protocol === 'groq_safeguard'
+      ? 'admin.promptAudit.pool.validation.sessionTokenBudget'
+      : 'admin.promptAudit.pool.validation.inputLimit')
+  }
+  if (
+    endpoint.protocol === 'groq_safeguard' &&
+    (endpoint.tpm_limit < MIN_GROQ_TPM_LIMIT || endpoint.tpm_limit > MAX_GROQ_TPM_LIMIT)
+  ) {
+    return t('admin.promptAudit.pool.validation.tpmLimit')
+  }
   if (endpoint.enabled && endpoint.protocol === 'groq_safeguard' && !hasCredential(endpoint)) {
     return t('admin.promptAudit.pool.validation.groqCredential')
   }
@@ -299,6 +336,12 @@ const canProbeEditor = computed(() => {
     validURL(endpoint.base_url) &&
     endpoint.timeout_ms >= 100 &&
     endpoint.timeout_ms <= 30000 &&
+    endpoint.input_limit >= 128 &&
+    endpoint.input_limit <= 100000 &&
+    (
+      endpoint.protocol !== 'groq_safeguard' ||
+      (endpoint.tpm_limit >= MIN_GROQ_TPM_LIMIT && endpoint.tpm_limit <= MAX_GROQ_TPM_LIMIT)
+    ) &&
     (endpoint.protocol !== 'groq_safeguard' || hasCredential(endpoint)),
   )
 })
@@ -313,7 +356,12 @@ function openCreate() {
 function openEdit(endpoint: PromptAuditEndpointDraft) {
   editingIndex.value = props.endpoints.findIndex((item) => item.id === endpoint.id)
   editing.value = cloneData(endpoint)
-  if (editing.value.protocol === 'groq_safeguard') editing.value.model = DEFAULT_GROQ_SAFEGUARD_MODEL
+  if (editing.value.protocol === 'groq_safeguard') {
+    editing.value.model = DEFAULT_GROQ_SAFEGUARD_MODEL
+    editing.value.tpm_limit ||= DEFAULT_GROQ_TPM_LIMIT
+  } else {
+    editing.value.tpm_limit = 0
+  }
 }
 
 function closeEditor() {
@@ -342,7 +390,12 @@ function saveEditor() {
   if (!editing.value || editorError.value) return
   const next = props.endpoints.map((item) => cloneData(item))
   const value = cloneData(editing.value)
-  if (value.protocol === 'groq_safeguard') value.model = DEFAULT_GROQ_SAFEGUARD_MODEL
+  if (value.protocol === 'groq_safeguard') {
+    value.model = DEFAULT_GROQ_SAFEGUARD_MODEL
+    value.tpm_limit ||= DEFAULT_GROQ_TPM_LIMIT
+  } else {
+    value.tpm_limit = 0
+  }
   if (value.token.trim()) value.clear_token = false
   if (editingIndex.value < 0) next.push(value)
   else next.splice(editingIndex.value, 1, value)
@@ -375,6 +428,20 @@ function hasCredential(endpoint: PromptAuditEndpointDraft): boolean {
 
 function canProbe(endpoint: PromptAuditEndpointDraft): boolean {
   return endpoint.protocol !== 'groq_safeguard' || hasCredential(endpoint)
+}
+
+function endpointLimitSummary(endpoint: PromptAuditEndpointDraft): string {
+  if (endpoint.protocol === 'groq_safeguard') {
+    return t('admin.promptAudit.pool.groqLimitSummary', {
+      timeout: endpoint.timeout_ms,
+      tokens: endpoint.input_limit,
+      tpm: endpoint.tpm_limit || DEFAULT_GROQ_TPM_LIMIT,
+    })
+  }
+  return t('admin.promptAudit.pool.qwenLimitSummary', {
+    timeout: endpoint.timeout_ms,
+    chars: endpoint.input_limit,
+  })
 }
 
 function credentialLabel(endpoint: PromptAuditEndpointDraft): string {

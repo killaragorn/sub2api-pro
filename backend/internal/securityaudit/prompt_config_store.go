@@ -311,7 +311,7 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		stored := StorageEndpoint{
 			ID: strings.TrimSpace(endpoint.ID), Name: strings.TrimSpace(endpoint.Name),
 			Protocol: strings.TrimSpace(endpoint.Protocol), BaseURL: baseURL, Model: strings.TrimSpace(endpoint.Model),
-			TimeoutMS: endpoint.TimeoutMS, InputLimit: endpoint.InputLimit, Enabled: endpoint.Enabled,
+			TimeoutMS: endpoint.TimeoutMS, InputLimit: endpoint.InputLimit, TPMLimit: endpoint.TPMLimit, Enabled: endpoint.Enabled,
 		}
 		old, hadOld := currentByID[stored.ID]
 		switch {

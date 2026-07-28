@@ -24,6 +24,9 @@ const (
 	DefaultInputLimit        = 4000
 	MinInputLimit            = 128
 	MaxInputLimit            = 100000
+	DefaultGroqTPMLimit      = 8000
+	MinGroqTPMLimit          = 100
+	MaxGroqTPMLimit          = 10000000
 	MinSafeguardPolicyLength = 32
 	MaxSafeguardPolicyLength = 16000
 	DefaultPayloadTTL        = 30 * time.Minute
@@ -62,6 +65,7 @@ type StorageEndpoint struct {
 	TokenCiphertext string `json:"token_ciphertext,omitempty"`
 	TimeoutMS       int    `json:"timeout_ms"`
 	InputLimit      int    `json:"input_limit"`
+	TPMLimit        int    `json:"tpm_limit,omitempty"`
 	Enabled         bool   `json:"enabled"`
 }
 
@@ -92,6 +96,7 @@ type ActiveEndpoint struct {
 	Token           string
 	TimeoutMS       int
 	InputLimit      int
+	TPMLimit        int
 	Enabled         bool
 	SafeguardPolicy string
 }
@@ -123,6 +128,7 @@ type PublicEndpoint struct {
 	Model       string `json:"model"`
 	TimeoutMS   int    `json:"timeout_ms"`
 	InputLimit  int    `json:"input_limit"`
+	TPMLimit    int    `json:"tpm_limit"`
 	Enabled     bool   `json:"enabled"`
 	HasToken    bool   `json:"has_token"`
 	TokenStatus string `json:"token_status"`
@@ -158,6 +164,7 @@ type UpdateEndpoint struct {
 	ClearToken bool   `json:"clear_token"`
 	TimeoutMS  int    `json:"timeout_ms"`
 	InputLimit int    `json:"input_limit"`
+	TPMLimit   int    `json:"tpm_limit"`
 	Enabled    bool   `json:"enabled"`
 }
 
@@ -250,6 +257,13 @@ func normalizeStorageConfig(cfg *storageConfig) {
 		if ep.InputLimit == 0 {
 			ep.InputLimit = DefaultInputLimit
 		}
+		if ep.Protocol == EndpointProtocolGroqSafeguard {
+			if ep.TPMLimit == 0 {
+				ep.TPMLimit = DefaultGroqTPMLimit
+			}
+		} else {
+			ep.TPMLimit = 0
+		}
 	}
 }
 
@@ -299,6 +313,10 @@ func validateStorageConfig(cfg storageConfig) error {
 		if ep.InputLimit < MinInputLimit || ep.InputLimit > MaxInputLimit {
 			return infraerrors.BadRequest("prompt_audit_invalid_input_limit", "审计节点输入上限超出允许范围")
 		}
+		if ep.Protocol == EndpointProtocolGroqSafeguard &&
+			(ep.TPMLimit < MinGroqTPMLimit || ep.TPMLimit > MaxGroqTPMLimit) {
+			return infraerrors.BadRequest("prompt_audit_invalid_tpm_limit", "Groq 审计节点 TPM 上限超出允许范围")
+		}
 		if ep.Enabled {
 			enabled++
 		}
@@ -346,6 +364,11 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 		}
 		if endpoint.InputLimit < MinInputLimit || endpoint.InputLimit > MaxInputLimit {
 			return infraerrors.BadRequest("prompt_audit_invalid_input_limit", "审计节点输入上限超出允许范围")
+		}
+		if strings.TrimSpace(endpoint.Protocol) == EndpointProtocolGroqSafeguard &&
+			endpoint.TPMLimit != 0 &&
+			(endpoint.TPMLimit < MinGroqTPMLimit || endpoint.TPMLimit > MaxGroqTPMLimit) {
+			return infraerrors.BadRequest("prompt_audit_invalid_tpm_limit", "Groq 审计节点 TPM 上限超出允许范围")
 		}
 	}
 	return nil
@@ -401,7 +424,7 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool) PublicConfig 
 		}
 		endpoints = append(endpoints, PublicEndpoint{
 			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL,
-			Model: ep.Model, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit,
+			Model: ep.Model, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit, TPMLimit: ep.TPMLimit,
 			Enabled: ep.Enabled, HasToken: hasToken, TokenStatus: status,
 		})
 	}
@@ -442,7 +465,7 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 		}
 		active.Endpoints = append(active.Endpoints, ActiveEndpoint{
 			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL, Model: ep.Model,
-			Token: token, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit, Enabled: ep.Enabled,
+			Token: token, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit, TPMLimit: ep.TPMLimit, Enabled: ep.Enabled,
 			SafeguardPolicy: policy,
 		})
 	}

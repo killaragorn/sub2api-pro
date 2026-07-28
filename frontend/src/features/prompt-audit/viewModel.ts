@@ -9,6 +9,9 @@ import type {
 
 export const DEFAULT_GUARD_MODEL = 'sileader/qwen3guard:0.6b'
 export const DEFAULT_GROQ_SAFEGUARD_MODEL = 'openai/gpt-oss-safeguard-20b'
+export const DEFAULT_GROQ_TPM_LIMIT = 8000
+export const MIN_GROQ_TPM_LIMIT = 100
+export const MAX_GROQ_TPM_LIMIT = 10000000
 export const MIN_SAFEGUARD_POLICY_LENGTH = 32
 export const MAX_SAFEGUARD_POLICY_LENGTH = 16000
 export const RECOMMENDED_SAFEGUARD_POLICY_MIN_LENGTH = 1200
@@ -19,18 +22,24 @@ export const PROMPT_AUDIT_PROTOCOLS: ReadonlyArray<{
   baseUrl: string
   model: string
   timeoutMs: number
+  inputLimit: number
+  tpmLimit: number
 }> = [
   {
     id: 'openai_compatible',
     baseUrl: 'http://127.0.0.1:8000',
     model: DEFAULT_GUARD_MODEL,
     timeoutMs: 3000,
+    inputLimit: 4000,
+    tpmLimit: 0,
   },
   {
     id: 'groq_safeguard',
     baseUrl: 'https://api.groq.com/openai',
     model: DEFAULT_GROQ_SAFEGUARD_MODEL,
     timeoutMs: 10000,
+    inputLimit: 4000,
+    tpmLimit: DEFAULT_GROQ_TPM_LIMIT,
   },
 ]
 
@@ -64,6 +73,9 @@ export function configToDraft(config: PromptAuditConfig): PromptAuditDraft {
     endpoints: (config.endpoints ?? []).map((endpoint) => ({
       ...endpoint,
       model: endpoint.protocol === 'groq_safeguard' ? DEFAULT_GROQ_SAFEGUARD_MODEL : endpoint.model,
+      tpm_limit: endpoint.protocol === 'groq_safeguard'
+        ? endpoint.tpm_limit || DEFAULT_GROQ_TPM_LIMIT
+        : 0,
       token: '',
       clear_token: false,
     })),
@@ -79,6 +91,7 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
     model: DEFAULT_GUARD_MODEL,
     timeout_ms: 3000,
     input_limit: 4000,
+    tpm_limit: 0,
     enabled: true,
     has_token: false,
     token_status: 'missing',
@@ -99,6 +112,8 @@ export function applyEndpointProtocolPreset(
     base_url: preset.baseUrl,
     model: preset.model,
     timeout_ms: preset.timeoutMs,
+    input_limit: preset.inputLimit,
+    tpm_limit: preset.tpmLimit,
   }
 }
 
@@ -128,6 +143,9 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
       clear_token: endpoint.clear_token,
       timeout_ms: Number(endpoint.timeout_ms),
       input_limit: Number(endpoint.input_limit),
+      tpm_limit: endpoint.protocol === 'groq_safeguard'
+        ? Number(endpoint.tpm_limit || DEFAULT_GROQ_TPM_LIMIT)
+        : 0,
       enabled: endpoint.enabled,
     })),
   }

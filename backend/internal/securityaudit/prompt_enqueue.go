@@ -5,6 +5,11 @@ import (
 	"errors"
 )
 
+const (
+	defaultPromptAuditMaxAttempts = 3
+	groqPromptAuditMaxAttempts    = 1
+)
+
 type Enqueuer struct {
 	config  ConfigStore
 	repo    JobRepository
@@ -57,7 +62,11 @@ func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "payload_encode_failed"}))
 		return err
 	}
-	job, err := e.repo.CreateStagingWithCapacity(ctx, snapshot.Redacted(), cfg.ConfigVersion, 3, cfg.QueueCapacity)
+	maxAttempts := defaultPromptAuditMaxAttempts
+	if promptAuditPoolUsesStructuredMessages(endpoints) {
+		maxAttempts = groqPromptAuditMaxAttempts
+	}
+	job, err := e.repo.CreateStagingWithCapacity(ctx, snapshot.Redacted(), cfg.ConfigVersion, maxAttempts, cfg.QueueCapacity)
 	if err != nil {
 		code := "database_unavailable"
 		if errors.Is(err, ErrQueueFull) {

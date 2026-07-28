@@ -23,7 +23,7 @@ const baseConfig = (): PromptAuditConfig => ({
   groq_safeguard_policy: 'Default safeguard classification policy with enough detail for validation.',
   groq_safeguard_default_policy: 'Default safeguard classification policy with enough detail for validation.',
   worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: true, group_ids: [],
-  endpoints: [{ id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000', model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true, has_token: true, token_status: 'configured' }],
+  endpoints: [{ id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000', model: 'guard-model', timeout_ms: 3000, input_limit: 4000, tpm_limit: 0, enabled: true, has_token: true, token_status: 'configured' }],
   config_version: 7, updated_at: '2026-07-16T00:00:00Z', updated_by: 1, change_summary: '{}',
 })
 const runtime = (): PromptAuditRuntime => ({
