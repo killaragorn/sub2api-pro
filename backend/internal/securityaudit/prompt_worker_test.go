@@ -320,7 +320,7 @@ func TestEnqueuerGPTOSSSafeguardExcludesToolOutputAndAttachments(t *testing.T) {
 		payload,
 	).Enqueue(context.Background(), req))
 
-	expected := "user text\n\nSYSTEM_CANARY\n\nDEVELOPER_CANARY\n\nASSISTANT_CANARY"
+	expected := "SYSTEM_CANARY\n\nDEVELOPER_CANARY\n\nASSISTANT_CANARY\n\nuser text"
 	stored, err := decodePromptAuditPayload(payload.values[51])
 	require.NoError(t, err)
 	require.Equal(t, expected, metadataTextForTest(stored.ScanText))
@@ -436,6 +436,10 @@ func TestWorkerCompletesPassWithoutEventRefreshesEveryChunkAndDeletesPayload(t *
 	require.Equal(t, []int64{51}, payload.deleted)
 	require.Equal(t, int64(1), metrics.Snapshot().Total)
 	require.Equal(t, int64(1), metrics.Snapshot().Allowed)
+	loads := metrics.EndpointLoads(asyncConfig().Endpoints)
+	require.Len(t, loads, 1)
+	require.Equal(t, int64(2), loads[0].Total)
+	require.Equal(t, int64(2), loads[0].Success)
 }
 
 func TestWorkerRestoresStructuredMessagesForGroqSafeguard(t *testing.T) {
@@ -536,15 +540,22 @@ func TestWorkerPanicLeaseLossAndLifecycleAreContained(t *testing.T) {
 	t.Run("panic", func(t *testing.T) {
 		repo := &fakeJobRepository{}
 		payload := &fakePayloadStore{values: map[int64]string{51: "abc"}}
+		metrics := NewAtomicMetrics()
 		runner := NewRunner(&fakeConfigStore{cfg: asyncConfig(), active: true}, repo, payload, PromptScannerFunc(func(context.Context, ActiveEndpoint, string, []string) (*NormalizedResult, error) {
 			panic("scanner panic canary")
-		}), NewAtomicMetrics())
+		}), metrics)
 		require.NotPanics(t, func() { runner.processSafely(context.Background(), 0, asyncConfig(), workerJob(1, 3)) })
 		_, _, failed, _, _, code, message := runner.Snapshot()
 		require.Equal(t, int64(1), failed)
 		require.Equal(t, "worker_panic", code)
 		require.NotContains(t, message, "canary")
 		require.Equal(t, 1, repo.failed)
+		loads := metrics.EndpointLoads(asyncConfig().Endpoints)
+		require.Len(t, loads, 1)
+		require.Zero(t, loads[0].Active)
+		require.Equal(t, int64(1), loads[0].Total)
+		require.Equal(t, int64(1), loads[0].Errors)
+		require.Equal(t, "worker_panic", loads[0].LastErrorCode)
 	})
 
 	t.Run("lease loss", func(t *testing.T) {

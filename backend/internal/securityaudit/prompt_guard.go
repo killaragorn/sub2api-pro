@@ -205,13 +205,22 @@ func (g *GuardEvaluator) scanChunk(ctx context.Context, cfg ActiveConfig, endpoi
 			}
 			continue
 		}
+		callStarted := g.clock.Now()
+		if g.metrics != nil {
+			g.metrics.EndpointStarted(endpoint)
+		}
 		result, err := callPromptScanner(ctx, g.scanner, endpoint, chunk, cfg.Scanners)
 		<-semaphore
-		if err == nil && result != nil {
-			return result, nil
+		if err == nil {
+			if result == nil {
+				err = &GuardError{Code: ErrorCodeInvalidResponse, Retryable: false}
+			}
+		}
+		if g.metrics != nil {
+			g.metrics.EndpointFinished(endpoint, g.clock.Now().Sub(callStarted), err)
 		}
 		if err == nil {
-			err = &GuardError{Code: ErrorCodeInvalidResponse, Retryable: false}
+			return result, nil
 		}
 		lastErr = err
 		var guardErr *GuardError

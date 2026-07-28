@@ -4,10 +4,11 @@ import { mount } from '@vue/test-utils'
 import EndpointPool from '../components/EndpointPool.vue'
 import PolicyPanel from '../components/PolicyPanel.vue'
 import SafeguardPolicyPanel from '../components/SafeguardPolicyPanel.vue'
+import RuntimeOverview from '../components/RuntimeOverview.vue'
 import EventWorkspace from '../components/EventWorkspace.vue'
 import EventDetailDialog from '../components/EventDetailDialog.vue'
 import FilterDeleteDialog from '../components/FilterDeleteDialog.vue'
-import type { PromptAuditDraft, PromptAuditEndpointDraft, PromptAuditEvent, PromptEventFilters } from '../types'
+import type { PromptAuditDraft, PromptAuditEndpointDraft, PromptAuditEvent, PromptAuditRuntime, PromptEventFilters } from '../types'
 import { emptyEventFilters, resolveDeleteRangeFilters, SCANNER_CATALOG } from '../viewModel'
 
 vi.mock('vue-i18n', async () => {
@@ -26,6 +27,67 @@ const endpoint = (): PromptAuditEndpointDraft => ({
 
 describe('Prompt Audit components', () => {
   beforeEach(() => vi.restoreAllMocks())
+
+  it('matches the content-audit runtime density and shows masked per-node Key load', () => {
+    const runtime: PromptAuditRuntime = {
+      process_status: 'running',
+      effective_mode: 'blocking',
+      expected_config_version: 9,
+      active_config_version: 9,
+      worker_total: 4,
+      worker_active: 2,
+      queue_capacity: 100,
+      queue: { staging: 0, queued: 3, processing: 2, retry: 1, done: 40, failed: 2, active: 6 },
+      processed_total: 42,
+      failed_total: 2,
+      enqueued_total: 48,
+      dropped_total: 1,
+      last_processed_at: '2026-07-28T00:00:00Z',
+      database_status: 'ok',
+      redis_status: 'ok',
+      endpoints: {
+        'groq-primary': {
+          ok: true, status: 'healthy', message: 'ok', latency_ms: 18, http_status: 200,
+          retryable: false, checked_at: '2026-07-28T00:00:00Z', token_applied: true,
+        },
+      },
+      endpoint_loads: [{
+        index: 0,
+        endpoint_id: 'groq-primary',
+        endpoint_name: 'Groq primary',
+        protocol: 'groq_safeguard',
+        model: 'openai/gpt-oss-safeguard-20b',
+        enabled: true,
+        key_configured: true,
+        masked_key: 'gsk_12****cdef',
+        status: 'healthy',
+        active: 2,
+        total: 48,
+        success: 46,
+        errors: 2,
+        avg_latency_ms: 21,
+        last_latency_ms: 18,
+        last_http_status: 200,
+      }],
+      guard_metrics: {
+        total: 42, allowed: 35, flagged: 3, blocked: 4, unavailable: 0, invalid: 0,
+        timeouts: 1, failovers: 2, bulkhead_full: 0, record_failed: 0, latency_p95_ms: 32,
+      },
+    }
+
+    const wrapper = mount(RuntimeOverview, {
+      props: { runtime, loading: false, error: '' },
+    })
+
+    expect(wrapper.findAll('[data-test="prompt-runtime-overview-cards"] > div')).toHaveLength(4)
+    expect(wrapper.find('[data-test="prompt-worker-runtime-card"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="prompt-api-key-load-card"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-test="prompt-api-key-load-row"]')).toHaveLength(1)
+    expect(wrapper.get('[data-test="prompt-api-key-load-row"]').text()).toContain('gsk_12****cdef')
+    expect(wrapper.get('[data-test="prompt-api-key-load-row"]').text()).toContain('openai/gpt-oss-safeguard-20b')
+    expect(wrapper.get('[data-test="prompt-api-key-load-row"]').text()).not.toContain('gsk_1234567890abcdef')
+    expect(wrapper.find('[data-test="prompt-guard-metrics-card"]').exists()).toBe(true)
+  })
 
   it('edits a saved endpoint with blank-secret keep, explicit clear, replacement, and probe actions', async () => {
     const wrapper = mount(EndpointPool, {

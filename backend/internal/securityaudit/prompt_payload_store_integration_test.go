@@ -49,12 +49,18 @@ func TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics(
 	config := &fakeConfigStore{active: true, cfg: ActiveConfig{
 		RiskControlEnabled: true, Enabled: true, WorkerCount: 3, QueueCapacity: 123,
 		ConfigVersion: 9, AllGroups: true,
+		Endpoints: []ActiveEndpoint{{
+			ID: "guard-1", Name: "Guard One", Protocol: EndpointProtocolGroqSafeguard,
+			Model: DefaultGroqSafeguardModel, Token: "gsk_runtime_test_credential", Enabled: true,
+		}},
 	}}
 	metrics := NewAtomicMetrics()
 	metrics.Observe(DecisionBlock, 25*time.Millisecond)
 	metrics.IncFailover()
 	metrics.IncEnqueued()
 	metrics.IncDropped()
+	metrics.EndpointStarted(config.cfg.Endpoints[0])
+	metrics.EndpointFinished(config.cfg.Endpoints[0], 15*time.Millisecond, nil)
 	service := NewPromptService(
 		config,
 		NewPostgreSQLRepository(db),
@@ -79,6 +85,10 @@ func TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics(
 	require.Equal(t, int64(25), runtime.GuardMetrics.LatencyP95MS)
 	require.Equal(t, int64(1), runtime.EnqueuedTotal)
 	require.Equal(t, int64(1), runtime.DroppedTotal)
+	require.Len(t, runtime.EndpointLoads, 1)
+	require.Equal(t, "guard-1", runtime.EndpointLoads[0].EndpointID)
+	require.Equal(t, "gsk_ru****tial", runtime.EndpointLoads[0].MaskedKey)
+	require.Equal(t, int64(1), runtime.EndpointLoads[0].Success)
 	// The runner has not been started in this integration test, so the honest
 	// process status is degraded rather than a fabricated running heartbeat.
 	require.Equal(t, "degraded", runtime.ProcessStatus)

@@ -119,6 +119,26 @@ export interface PromptGuardMetrics {
   latency_max_ms?: number
 }
 
+export interface PromptEndpointLoad {
+  index: number
+  endpoint_id: string
+  endpoint_name: string
+  protocol: PromptAuditEndpointProtocol
+  model: string
+  enabled: boolean
+  key_configured: boolean
+  masked_key: string
+  status: 'healthy' | 'error' | 'idle' | 'disabled' | string
+  active: number
+  total: number
+  success: number
+  errors: number
+  avg_latency_ms: number
+  last_latency_ms: number
+  last_http_status: number
+  last_error_code?: string
+}
+
 export interface PromptAuditRuntime {
   process_status: 'disabled' | 'running' | 'degraded' | 'error' | string
   effective_mode: PromptAuditMode
@@ -141,6 +161,7 @@ export interface PromptAuditRuntime {
   database_status: string
   redis_status: string
   endpoints: Record<string, PromptProbeResult>
+  endpoint_loads: PromptEndpointLoad[]
   guard_metrics: PromptGuardMetrics
 }
 

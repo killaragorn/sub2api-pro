@@ -316,12 +316,9 @@ func (r *Runner) setLastError(code, _ string) {
 func scanWithFailover(ctx context.Context, scanner PromptScanner, scanners []string, endpoints []ActiveEndpoint, chunk PromptScanChunk, metrics Metrics) (*NormalizedResult, error) {
 	var lastErr error
 	for index, endpoint := range endpoints {
-		result, err := scanPromptScanner(ctx, scanner, endpoint, chunk, scanners)
-		if err == nil && result != nil {
-			return result, nil
-		}
+		result, err := scanPromptScannerWithMetrics(ctx, scanner, endpoint, chunk, scanners, metrics)
 		if err == nil {
-			err = &GuardError{Code: ErrorCodeInvalidResponse, Retryable: false}
+			return result, nil
 		}
 		lastErr = err
 		var guardErr *GuardError
@@ -336,6 +333,30 @@ func scanWithFailover(ctx context.Context, scanner PromptScanner, scanners []str
 		lastErr = &GuardError{Code: ErrorCodeUnavailable}
 	}
 	return nil, lastErr
+}
+
+func scanPromptScannerWithMetrics(ctx context.Context, scanner PromptScanner, endpoint ActiveEndpoint, chunk PromptScanChunk, scanners []string, metrics Metrics) (result *NormalizedResult, err error) {
+	started := time.Now()
+	if metrics != nil {
+		metrics.EndpointStarted(endpoint)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if metrics != nil {
+				metrics.EndpointFinished(endpoint, time.Since(started), &GuardError{Code: "worker_panic", Retryable: false})
+			}
+			panic(recovered)
+		}
+		if metrics != nil {
+			metrics.EndpointFinished(endpoint, time.Since(started), err)
+		}
+	}()
+
+	result, err = scanPromptScanner(ctx, scanner, endpoint, chunk, scanners)
+	if err == nil && result == nil {
+		err = &GuardError{Code: ErrorCodeInvalidResponse, Retryable: false}
+	}
+	return result, err
 }
 
 func retryBackoff(attempt int) time.Duration {

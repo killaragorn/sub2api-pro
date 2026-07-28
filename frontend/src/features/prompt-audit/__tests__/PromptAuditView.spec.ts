@@ -31,6 +31,11 @@ const runtime = (): PromptAuditRuntime => ({
   worker_total: 4, worker_active: 1, queue_capacity: 100,
   queue: { staging: 0, queued: 0, processing: 1, retry: 0, done: 5, failed: 0, active: 1 },
   processed_total: 5, failed_total: 0, enqueued_total: 5, dropped_total: 0, database_status: 'ok', redis_status: 'ok', endpoints: {},
+  endpoint_loads: [{
+    index: 0, endpoint_id: 'guard-1', endpoint_name: 'Guard One', protocol: 'openai_compatible', model: 'guard-model',
+    enabled: true, key_configured: true, masked_key: 'guard-****-key', status: 'healthy',
+    active: 1, total: 5, success: 5, errors: 0, avg_latency_ms: 12, last_latency_ms: 10, last_http_status: 200,
+  }],
   guard_metrics: { total: 1, allowed: 1, flagged: 0, blocked: 0, unavailable: 0, invalid: 0, timeouts: 0, failovers: 0, bulkhead_full: 0, record_failed: 0 },
 })
 
@@ -109,6 +114,7 @@ describe('PromptAuditView', () => {
     expect(wrapper.find('[data-test="events"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="runtime"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="pass-events-disabled-notice"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="refresh-runtime"]').exists()).toBe(true)
 
     await wrapper.get('[data-test="open-settings"]').trigger('click')
     await flushPromises()

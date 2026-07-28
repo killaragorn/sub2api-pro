@@ -239,6 +239,26 @@ type AuditMetricsSnapshot struct {
 	Dropped  int64 `json:"dropped"`
 }
 
+type EndpointLoadSnapshot struct {
+	Index          int    `json:"index"`
+	EndpointID     string `json:"endpoint_id"`
+	EndpointName   string `json:"endpoint_name"`
+	Protocol       string `json:"protocol"`
+	Model          string `json:"model"`
+	Enabled        bool   `json:"enabled"`
+	KeyConfigured  bool   `json:"key_configured"`
+	MaskedKey      string `json:"masked_key"`
+	Status         string `json:"status"`
+	Active         int64  `json:"active"`
+	Total          int64  `json:"total"`
+	Success        int64  `json:"success"`
+	Errors         int64  `json:"errors"`
+	AvgLatencyMS   int64  `json:"avg_latency_ms"`
+	LastLatencyMS  int64  `json:"last_latency_ms"`
+	LastHTTPStatus int    `json:"last_http_status"`
+	LastErrorCode  string `json:"last_error_code,omitempty"`
+}
+
 type QueueStats struct {
 	Staging    int64 `json:"staging"`
 	Queued     int64 `json:"queued"`
@@ -271,6 +291,7 @@ type RuntimeSnapshot struct {
 	DatabaseStatus        string                 `json:"database_status"`
 	RedisStatus           string                 `json:"redis_status"`
 	Endpoints             map[string]ProbeResult `json:"endpoints"`
+	EndpointLoads         []EndpointLoadSnapshot `json:"endpoint_loads"`
 	GuardMetrics          GuardMetricsSnapshot   `json:"guard_metrics"`
 }
 
@@ -292,6 +313,8 @@ type Metrics interface {
 	IncFailover()
 	IncBulkheadFull()
 	IncRecordFailed()
+	EndpointStarted(endpoint ActiveEndpoint)
+	EndpointFinished(endpoint ActiveEndpoint, latency time.Duration, err error)
 }
 
 type PromptScanner interface {

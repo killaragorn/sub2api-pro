@@ -251,8 +251,14 @@ Prompt Audit 在现有 Qwen3Guard OpenAI-compatible 节点之外，增加了 Gro
 - 启用 `openai/gpt-oss-safeguard-20b` 时，整个优先级审计池会审计 `system`、
   `developer`、`assistant`、`user` 的文本；仅 tool 输出、图片块和文件块不会进入
   扫描请求或该次审计事件；
+- 提取后的消息和同一消息内的文本块严格按照客户端请求中的原始顺序组装，不再把最后一条
+  `user` 消息提前；Groq 请求保留原始角色顺序，Qwen 的扁平文本也使用相同的源顺序；
 - 审计记录包含 scanner backend、版本、endpoint、policy/config version 和证据元数据；
-- 管理端主页面集中展示运行概览和审计事件，配置入口采用与内容审核一致的弹窗式设置界面；
+- 管理端主页面采用与内容审核一致的全宽、高信息密度布局，集中展示运行概览、Worker 与
+  持久队列、Guard 指标、依赖探测、最近错误和审计事件，配置入口使用相同风格的弹窗；
+- 运行概览按审计节点展示脱敏 API Key 的活动调用、累计调用、成功/错误、平均/最近延迟和
+  最近 HTTP/错误状态；统计按节点 ID 与 Key 哈希隔离，更换 Key 后从新计数器开始，且不会
+  向管理端返回明文 Key；
 - 配置弹窗按“模型服务 / 审核策略 / 范围与风险 / 运行参数”分区，节点编辑、凭据状态和连接测试在模型服务页完成；
 - 管理端可选择 Qwen3Guard 或 Groq Safeguard，并显示相应默认值与说明；Groq 模型固定为
   `openai/gpt-oss-safeguard-20b`，启用节点时必须配置 Groq API Key；
@@ -272,6 +278,8 @@ Prompt Audit 在现有 Qwen3Guard OpenAI-compatible 节点之外，增加了 Gro
 - `backend/internal/securityaudit/prompt_gpt_oss_safeguard.go`
 - `backend/internal/securityaudit/prompt_qwen3guard.go`
 - `backend/internal/securityaudit/prompt_config.go`
+- `backend/internal/securityaudit/prompt_snapshot.go`
+- `backend/internal/securityaudit/prompt_metrics.go`
 - `frontend/src/features/prompt-audit/`
 
 默认 Policy 设计依据：

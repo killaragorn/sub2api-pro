@@ -21,12 +21,13 @@ var (
 	phonePattern  = regexp.MustCompile(`(?:\+?\d[\d\s().-]{8,}\d)`)
 )
 
+// Kept only so workers can finish jobs enqueued by versions that moved the
+// latest user segment ahead of the original message order.
 const promptAuditPrioritySeparator = "\x00SUB2API_PROMPT_AUDIT_PRIORITY_END\x00"
 
 type promptSegment struct {
 	text              string
 	role              string
-	user              bool
 	auditContinuation bool
 	safeguardExcluded bool
 }
@@ -52,8 +53,12 @@ func extractPromptSnapshot(req Request, excludeToolAndAttachments bool) (PromptS
 	if len(normalized) == 0 {
 		return PromptSnapshot{}, ErrNoPromptText
 	}
-	segments := prioritizePromptSegments(normalized)
-	scanText, metadataText := buildPrioritizedScanText(segments)
+	orderedText := make([]string, 0, len(normalized))
+	for _, segment := range normalized {
+		orderedText = append(orderedText, segment.text)
+	}
+	scanText := strings.Join(orderedText, "\n\n")
+	metadataText := scanText
 	digest := sha256.Sum256([]byte(metadataText))
 	stage := strings.TrimSpace(req.Stage)
 	if stage == "" {
@@ -175,7 +180,6 @@ func extractMessages(value any, wantedRoles ...string) []promptSegment {
 			result = append(result, promptSegment{
 				text:              text,
 				role:              role,
-				user:              role == "user",
 				auditContinuation: index > 0,
 				safeguardExcluded: isToolRole(role),
 			})
@@ -215,20 +219,19 @@ func extractAnthropicSystem(value any) []promptSegment {
 func extractResponses(value any) []promptSegment {
 	switch typed := value.(type) {
 	case string:
-		return []promptSegment{{text: typed, role: "user", user: true}}
+		return []promptSegment{{text: typed, role: "user"}}
 	case []any:
 		result := make([]promptSegment, 0, len(typed))
 		for _, item := range typed {
 			switch entry := item.(type) {
 			case string:
-				result = append(result, promptSegment{text: entry, role: "user", user: true})
+				result = append(result, promptSegment{text: entry, role: "user"})
 			case map[string]any:
 				role := strings.ToLower(stringValue(entry["role"]))
 				if role != "" && !isClientInstructionRole(role) {
 					continue
 				}
 				typeName := strings.ToLower(stringValue(entry["type"]))
-				userText := (role == "" || role == "user") && isResponseUserTextType(typeName)
 				safeguardExcluded := isToolRole(role) || isResponseToolOutputType(typeName)
 				auditRole := responseAuditRole(role, typeName)
 				if content, exists := entry["content"]; exists {
@@ -236,7 +239,6 @@ func extractResponses(value any) []promptSegment {
 						result = append(result, promptSegment{
 							text:              text,
 							role:              auditRole,
-							user:              userText,
 							auditContinuation: index > 0,
 							safeguardExcluded: safeguardExcluded,
 						})
@@ -245,7 +247,6 @@ func extractResponses(value any) []promptSegment {
 					result = append(result, promptSegment{
 						text:              text,
 						role:              auditRole,
-						user:              userText,
 						safeguardExcluded: safeguardExcluded,
 					})
 				}
@@ -265,7 +266,6 @@ func extractResponses(value any) []promptSegment {
 			result = append(result, promptSegment{
 				text:              text,
 				role:              auditRole,
-				user:              (role == "" || role == "user") && isResponseUserTextType(typeName),
 				auditContinuation: index > 0,
 				safeguardExcluded: isToolRole(role) || isResponseToolOutputType(typeName),
 			})
@@ -288,15 +288,6 @@ func responseAuditRole(role, typeName string) string {
 		return "assistant"
 	}
 	return "user"
-}
-
-func isResponseUserTextType(typeName string) bool {
-	switch strings.ToLower(strings.TrimSpace(typeName)) {
-	case "", "message", "text", "input_text":
-		return true
-	default:
-		return false
-	}
 }
 
 func isResponseToolOutputType(typeName string) bool {
@@ -345,7 +336,6 @@ func extractGemini(value any) []promptSegment {
 					result = append(result, promptSegment{
 						text:              text,
 						role:              geminiAuditRole(role),
-						user:              role == "" || role == "user",
 						auditContinuation: textIndex > 0,
 						safeguardExcluded: isToolRole(role) || isGeminiSafeguardExcludedPart(object),
 					})
@@ -435,7 +425,6 @@ func extractGeminiSystemInstruction(value any) []promptSegment {
 		segments := extractGemini(typed)
 		for index := range segments {
 			segments[index].role = "system"
-			segments[index].user = false
 		}
 		return segments
 	}
@@ -451,7 +440,7 @@ func extractGeminiInstances(value any) []promptSegment {
 	for _, item := range instances {
 		if instance, ok := item.(map[string]any); ok {
 			if prompt := stringValue(instance["prompt"]); prompt != "" {
-				result = append(result, promptSegment{text: prompt, role: "user", user: true})
+				result = append(result, promptSegment{text: prompt, role: "user"})
 			}
 		}
 	}
@@ -581,27 +570,6 @@ func normalizePromptSegments(values []promptSegment) []promptSegment {
 	return normalized
 }
 
-func prioritizePromptSegments(normalized []promptSegment) []string {
-	if len(normalized) == 0 {
-		return nil
-	}
-	priorityIndex := len(normalized) - 1
-	for index := len(normalized) - 1; index >= 0; index-- {
-		if normalized[index].user {
-			priorityIndex = index
-			break
-		}
-	}
-	result := make([]string, 0, len(normalized))
-	result = append(result, normalized[priorityIndex].text)
-	for index, segment := range normalized {
-		if index != priorityIndex {
-			result = append(result, segment.text)
-		}
-	}
-	return result
-}
-
 func promptAuditMessages(segments []promptSegment) []PromptAuditMessage {
 	messages := make([]PromptAuditMessage, 0, len(segments))
 	for _, segment := range segments {
@@ -621,21 +589,12 @@ func promptAuditMessages(segments []promptSegment) []PromptAuditMessage {
 	return messages
 }
 
-func buildPrioritizedScanText(segments []string) (scanText string, metadataText string) {
-	metadataText = strings.Join(segments, "\n\n")
-	if len(segments) <= 1 {
-		return metadataText, metadataText
-	}
-	return segments[0] + promptAuditPrioritySeparator + strings.Join(segments[1:], "\n\n"), metadataText
-}
-
 func promptSegmentsForRole(texts []string, role string) []promptSegment {
 	result := make([]promptSegment, 0, len(texts))
 	for index, text := range texts {
 		result = append(result, promptSegment{
 			text:              text,
 			role:              role,
-			user:              role == "" || role == "user",
 			auditContinuation: index > 0,
 			safeguardExcluded: isToolRole(role),
 		})
@@ -721,10 +680,9 @@ func BuildFullPrompt(value string, maxRunes int) string {
 	return TrimRunes(strings.TrimSpace(value), maxRunes)
 }
 
-// FullPromptFromScanText reconstructs the display prompt from the worker scan
-// payload. buildPrioritizedScanText inserts exactly one priority separator
-// between the prioritized segment and the remainder, so replacing it with the
-// metadata joiner yields the original multi-segment text.
+// FullPromptFromScanText reconstructs display text from a transient worker
+// payload. New payloads already use source order; replacing the legacy
+// separator keeps queued jobs from older versions readable.
 func FullPromptFromScanText(scanText string) string {
 	return BuildFullPrompt(strings.ReplaceAll(scanText, promptAuditPrioritySeparator, "\n\n"), DefaultFullPromptMaxRunes)
 }

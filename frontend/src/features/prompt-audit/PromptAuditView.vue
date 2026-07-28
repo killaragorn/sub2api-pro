@@ -1,25 +1,28 @@
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-[1600px] pb-8">
-      <header class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div class="space-y-6 pb-8">
+      <header class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-400">{{ t('nav.securityAudit') }}</p>
-          <h1 class="mt-1 text-2xl font-semibold text-gray-950 dark:text-white">{{ t('admin.promptAudit.title') }}</h1>
-          <p class="mt-2 max-w-3xl text-sm text-gray-500 dark:text-dark-300">{{ t('admin.promptAudit.description') }}</p>
+          <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.promptAudit.title') }}</h1>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.description') }}</p>
         </div>
-        <div v-if="draft" class="flex flex-wrap items-center gap-3 lg:justify-end">
-          <div class="text-xs text-gray-500 dark:text-dark-400 lg:text-right">
+        <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+          <div v-if="draft" class="mr-1 text-xs text-gray-500 dark:text-dark-400 lg:text-right">
             <p>{{ t('admin.promptAudit.configVersion', { version: draft.config_version }) }}</p>
             <p v-if="draft.updated_at" class="mt-1">{{ formatDate(draft.updated_at) }}</p>
           </div>
-          <button type="button" class="btn btn-primary inline-flex items-center gap-2" data-test="open-settings" @click="openSettings()">
+          <button type="button" class="btn btn-secondary inline-flex items-center gap-2" :disabled="loading.runtime" data-test="refresh-runtime" @click="loadRuntime">
+            <Icon name="refresh" size="sm" :class="loading.runtime ? 'animate-spin' : ''" />
+            {{ t('admin.promptAudit.actions.refresh') }}
+          </button>
+          <button v-if="draft" type="button" class="btn btn-primary inline-flex items-center gap-2" data-test="open-settings" @click="openSettings()">
             <Icon name="cog" size="sm" />
             {{ t('admin.promptAudit.settings.open') }}
           </button>
         </div>
       </header>
 
-      <div v-if="loadErrors.config && !draft" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/30">
+      <div v-if="loadErrors.config && !draft" role="alert" class="card border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/30">
         <p class="text-sm text-red-700 dark:text-red-300">{{ loadErrors.config }}</p>
         <button type="button" class="btn btn-secondary btn-sm mt-3" @click="loadConfig">{{ t('admin.promptAudit.actions.retry') }}</button>
       </div>
@@ -31,7 +34,7 @@
           v-if="draft?.enabled && !draft.store_pass_events"
           data-test="pass-events-disabled-notice"
           role="status"
-          class="mt-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200"
+          class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200"
         >
           <span>{{ t('admin.promptAudit.events.passEventsDisabled') }}</span>
           <button type="button" class="btn btn-secondary btn-sm" @click="openSettings('service')">

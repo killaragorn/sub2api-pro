@@ -186,6 +186,9 @@ func (s *PromptService) Runtime(ctx context.Context) RuntimeSnapshot {
 		WorkerTotal: workerTotal, QueueCapacity: queueCapacity, DatabaseStatus: "ok", RedisStatus: "ok",
 		Endpoints: s.probeSnapshot(), GuardMetrics: s.metrics.Snapshot(),
 	}
+	if hasConfig {
+		runtime.EndpointLoads = s.metrics.EndpointLoads(cfg.Endpoints)
+	}
 	if s.repo != nil {
 		stats, err := s.repo.QueueStats(ctx)
 		if err != nil {
