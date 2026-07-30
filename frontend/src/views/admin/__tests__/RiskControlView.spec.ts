@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
-import { flushPromises, mount } from '@vue/test-utils'
+import type { Component } from 'vue'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 
 import RiskControlView from '../RiskControlView.vue'
-import type { ContentModerationConfig, UpdateContentModerationConfig } from '@/api/admin/riskControl'
+import type { ContentModerationConfig, ContentModerationLog, UpdateContentModerationConfig } from '@/api/admin/riskControl'
 
 const {
   getConfig,
@@ -57,10 +58,16 @@ vi.mock('@/stores/app', () => ({
 vi.mock('@/composables/useClipboard', async () => {
   const { ref } = await import('vue')
   return {
-    useClipboard: () => ({
-      copied: ref(false),
-      copyToClipboard,
-    }),
+    useClipboard: () => {
+      const copied = ref(false)
+      return {
+        copied,
+        copyToClipboard,
+        resetCopied: () => {
+          copied.value = false
+        },
+      }
+    },
   }
 })
 
@@ -154,6 +161,39 @@ const runtimeStatus = () => ({
   last_cleanup_deleted_non_hit: 0,
 })
 
+const moderationLog = (overrides: Partial<ContentModerationLog> = {}): ContentModerationLog => ({
+  id: 1,
+  request_id: 'req-1',
+  user_id: 9,
+  user_email: 'audit@example.com',
+  api_key_id: 3,
+  api_key_name: 'audit-key',
+  group_id: 2,
+  group_name: 'default',
+  endpoint: '/v1/responses',
+  provider: 'openai',
+  model: 'gpt-5',
+  mode: 'pre_block',
+  action: 'keyword_block',
+  flagged: true,
+  highest_category: 'keyword',
+  highest_score: 1,
+  matched_keyword: 'blocked',
+  category_scores: {},
+  threshold_snapshot: {},
+  input_excerpt: 'complete redacted input',
+  upstream_latency_ms: null,
+  error: '',
+  violation_count: 1,
+  auto_banned: false,
+  email_sent: false,
+  user_status: 'active',
+  queue_delay_ms: null,
+  cyber_request_available: false,
+  created_at: '2026-07-20T12:00:00Z',
+  ...overrides,
+})
+
 const AppLayoutStub = { template: '<div><slot /></div>' }
 const BaseDialogStub = defineComponent({
   props: {
@@ -164,6 +204,61 @@ const BaseDialogStub = defineComponent({
   },
   template: '<div v-if="show"><slot /><slot name="footer" /></div>',
 })
+const SelectStub = defineComponent({
+  props: {
+    modelValue: {
+      type: [String, Number, Boolean],
+      default: '',
+    },
+    options: {
+      type: Array,
+      default: () => [],
+    },
+  },
+  emits: ['update:modelValue', 'change'],
+  inheritAttrs: false,
+  setup(props, { attrs, emit }) {
+    const onChange = (event: Event) => {
+      const value = (event.target as HTMLSelectElement).value
+      emit('update:modelValue', value)
+      emit('change', value)
+    }
+    return () => h(
+      'select',
+      {
+        ...attrs,
+        value: props.modelValue,
+        onChange,
+      },
+      (props.options as Array<Record<string, unknown>>).map((option) => h(
+        'option',
+        {
+          key: String(option.value ?? ''),
+          value: option.value as string,
+        },
+        String(option.label ?? ''),
+      )),
+    )
+  },
+})
+
+const PaginationStub = defineComponent({
+  props: {
+    page: {
+      type: Number,
+      default: 1,
+    },
+  },
+  emits: ['update:page'],
+  setup(_props, { emit }) {
+    return () => h('button', {
+      type: 'button',
+      'data-test': 'next-page',
+      onClick: () => emit('update:page', 2),
+    }, 'next')
+  },
+})
+
 const ModelWhitelistSelectorStub = defineComponent({
   props: {
     modelValue: {
@@ -191,6 +286,31 @@ const ModelWhitelistSelectorStub = defineComponent({
       })
   },
 })
+
+const riskControlViewStubs = {
+  AppLayout: AppLayoutStub,
+  BaseDialog: BaseDialogStub,
+  Icon: true,
+  Select: SelectStub,
+  Toggle: true,
+  Pagination: PaginationStub,
+  ModelWhitelistSelector: ModelWhitelistSelectorStub,
+}
+
+type RiskControlViewStubs = Partial<Record<keyof typeof riskControlViewStubs, Component | boolean>>
+
+enableAutoUnmount(afterEach)
+
+function mountRiskControlView(stubs: RiskControlViewStubs = {}): VueWrapper {
+  return mount(RiskControlView, {
+    global: {
+      stubs: {
+        ...riskControlViewStubs,
+        ...stubs,
+      },
+    },
+  })
+}
 
 function findButtonByText(wrapper: VueWrapper, text: string): DOMWrapper<HTMLButtonElement> {
   const button = wrapper.findAll<HTMLButtonElement>('button').find((item) => item.text().includes(text))
@@ -239,19 +359,7 @@ describe('admin RiskControlView', () => {
   })
 
   it('saves the selected model filter mode and models', async () => {
-    const wrapper = mount(RiskControlView, {
-      global: {
-        stubs: {
-          AppLayout: AppLayoutStub,
-          BaseDialog: BaseDialogStub,
-          Icon: true,
-          Select: true,
-          Toggle: true,
-          Pagination: true,
-          ModelWhitelistSelector: ModelWhitelistSelectorStub,
-        },
-      },
-    })
+    const wrapper = mountRiskControlView()
 
     await flushPromises()
 
@@ -272,19 +380,7 @@ describe('admin RiskControlView', () => {
   })
 
   it('submits edited risk control thresholds when saving moderation config', async () => {
-    const wrapper = mount(RiskControlView, {
-      global: {
-        stubs: {
-          AppLayout: AppLayoutStub,
-          BaseDialog: BaseDialogStub,
-          Icon: true,
-          Select: true,
-          Toggle: true,
-          Pagination: true,
-          ModelWhitelistSelector: ModelWhitelistSelectorStub,
-        },
-      },
-    })
+    const wrapper = mountRiskControlView()
 
     await flushPromises()
 
@@ -312,19 +408,7 @@ describe('admin RiskControlView', () => {
       queue_length: 2,
     })
 
-    const wrapper = mount(RiskControlView, {
-      global: {
-        stubs: {
-          AppLayout: AppLayoutStub,
-          BaseDialog: BaseDialogStub,
-          Icon: true,
-          Select: true,
-          Toggle: true,
-          Pagination: true,
-          ModelWhitelistSelector: ModelWhitelistSelectorStub,
-        },
-      },
-    })
+    const wrapper = mountRiskControlView()
 
     await flushPromises()
 
@@ -379,19 +463,7 @@ describe('admin RiskControlView', () => {
       ],
     })
 
-    const wrapper = mount(RiskControlView, {
-      global: {
-        stubs: {
-          AppLayout: AppLayoutStub,
-          BaseDialog: BaseDialogStub,
-          Icon: true,
-          Select: true,
-          Toggle: true,
-          Pagination: true,
-          ModelWhitelistSelector: ModelWhitelistSelectorStub,
-        },
-      },
-    })
+    const wrapper = mountRiskControlView()
 
     await flushPromises()
 
@@ -433,39 +505,83 @@ describe('admin RiskControlView', () => {
     ]))
   })
 
+  it('reloads the first page with the selected action filter', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog()],
+      total: 21,
+      page: 1,
+      page_size: 20,
+      pages: 2,
+    })
+    const wrapper = mountRiskControlView()
+
+    await flushPromises()
+    await wrapper.get('[data-test="next-page"]').trigger('click')
+    await flushPromises()
+    expect(listLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }))
+
+    await wrapper.get('[data-test="action-filter"]').setValue('keyword_block')
+    await flushPromises()
+
+    expect(listLogs).toHaveBeenLastCalledWith(expect.objectContaining({
+      page: 1,
+      action: 'keyword_block',
+    }))
+  })
+
+  it('renders hash blocks with a block label and color', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({ id: 88, action: 'hash_block', highest_category: 'hash' })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = mountRiskControlView()
+
+    await flushPromises()
+
+    const badge = wrapper.get('[data-test="result-badge-88"]')
+    expect(badge.text()).toBe('admin.riskControl.action.hashBlock')
+    expect(badge.classes()).toEqual(expect.arrayContaining(['bg-red-100', 'text-red-700']))
+  })
+
+  it('copies the complete input excerpt from a regular detail dialog', async () => {
+    const completeInput = 'first line of the complete redacted input\nsecond line that must not be truncated'
+    listLogs.mockResolvedValue({
+      items: [moderationLog({ input_excerpt: completeInput })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = mountRiskControlView()
+
+    await flushPromises()
+    await findButtonByText(wrapper, 'first line of the complete redacted input').trigger('click')
+
+    await wrapper.get('[data-test="input-detail-copy"]').trigger('click')
+    await flushPromises()
+
+    expect(copyToClipboard).toHaveBeenCalledWith(
+      completeInput,
+      'admin.riskControl.detailCopied',
+    )
+  })
+
   it('loads a cyber request snapshot only when its detail is opened', async () => {
     listLogs.mockResolvedValue({
-      items: [{
+      items: [moderationLog({
         id: 77,
         request_id: 'req-cyber-77',
-        user_id: 9,
-        user_email: 'audit@example.com',
-        api_key_id: 3,
-        api_key_name: 'audit-key',
-        group_id: 2,
-        group_name: 'default',
-        endpoint: '/v1/responses',
-        provider: 'openai',
-        model: 'gpt-5',
         mode: 'post_upstream',
         action: 'cyber_policy',
-        flagged: true,
         highest_category: 'cyber_policy',
-        highest_score: 1,
         matched_keyword: '',
-        category_scores: {},
-        threshold_snapshot: {},
         input_excerpt: '',
-        upstream_latency_ms: null,
         error: 'cyber_policy: blocked',
-        violation_count: 1,
-        auto_banned: false,
-        email_sent: false,
-        user_status: 'active',
-        queue_delay_ms: null,
         cyber_request_available: true,
-        created_at: '2026-07-20T12:00:00Z',
-      }],
+      })],
       total: 1,
       page: 1,
       page_size: 20,
@@ -482,19 +598,7 @@ describe('admin RiskControlView', () => {
       truncated: false,
     })
 
-    const wrapper = mount(RiskControlView, {
-      global: {
-        stubs: {
-          AppLayout: AppLayoutStub,
-          BaseDialog: BaseDialogStub,
-          Icon: true,
-          Select: true,
-          Toggle: true,
-          Pagination: true,
-          ModelWhitelistSelector: ModelWhitelistSelectorStub,
-        },
-      },
-    })
+    const wrapper = mountRiskControlView()
 
     await flushPromises()
     expect(getCyberPolicyRequestAudit).not.toHaveBeenCalled()

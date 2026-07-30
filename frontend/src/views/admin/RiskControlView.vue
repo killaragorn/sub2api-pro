@@ -263,8 +263,9 @@
               </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-7">
               <Select v-model="filters.result" :options="resultOptions" @change="reloadLogsFromFirstPage" />
+              <Select v-model="filters.action" :options="actionOptions" data-test="action-filter" @change="reloadLogsFromFirstPage" />
               <Select v-model="filters.group_id" :options="groupFilterOptions" @change="reloadLogsFromFirstPage" />
               <Select v-model="filters.endpoint" :options="endpointOptions" @change="reloadLogsFromFirstPage" />
               <input v-model.trim="filters.search" type="search" class="input" :placeholder="t('admin.riskControl.filters.search')" @keyup.enter="reloadLogsFromFirstPage" />
@@ -310,7 +311,7 @@
                       <div class="text-xs text-gray-400">{{ row.provider || '-' }} / {{ row.model || '-' }}</div>
                     </td>
                     <td class="whitespace-nowrap px-5 py-4">
-                      <span class="inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(row)">
+                      <span :data-test="`result-badge-${row.id}`" class="inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(row)">
                         {{ resultLabel(row) }}
                       </span>
                     </td>
@@ -1102,18 +1103,14 @@
                   {{ inputDetailRow.group_name }}
                 </span>
                 <button
-                  v-if="inputDetailRow.action === 'cyber_policy' && cyberRequestAudit"
+                  v-if="detailCopyAvailable"
                   type="button"
                   class="btn btn-secondary btn-sm inline-flex items-center gap-1.5"
-                  data-test="cyber-audit-copy"
-                  @click="copyCyberRequestBody"
+                  :data-test="inputDetailRow.action === 'cyber_policy' ? 'cyber-audit-copy' : 'input-detail-copy'"
+                  @click="copyInputDetail"
                 >
-                  <Icon :name="cyberRequestCopied ? 'check' : 'copy'" size="sm" />
-                  {{
-                    cyberRequestCopied
-                      ? t('admin.riskControl.cyberRequestCopied')
-                      : t('admin.riskControl.cyberRequestCopy')
-                  }}
+                  <Icon :name="detailCopied ? 'check' : 'copy'" size="sm" />
+                  {{ detailCopyLabel }}
                 </button>
               </div>
             </div>
@@ -1170,6 +1167,7 @@ import Pagination from '@/components/common/Pagination.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
+  ContentModerationAction,
   ContentModerationAPIKeyLoad,
   ContentModerationAPIKeyStatus,
   ContentModerationConfig,
@@ -1238,7 +1236,7 @@ const riskThresholdCategories = Object.keys(riskThresholdDefaults)
 
 const { t } = useI18n()
 const appStore = useAppStore()
-const { copied: cyberRequestCopied, copyToClipboard } = useClipboard()
+const { copied: detailCopied, copyToClipboard, resetCopied } = useClipboard()
 const defaultBlockMessage = () => t('admin.riskControl.defaultBlockMessage')
 
 const loading = ref(true)
@@ -1315,6 +1313,7 @@ const pagination = reactive({
 
 const filters = reactive({
   result: '',
+  action: '' as ContentModerationAction | '',
   group_id: 0,
   endpoint: '',
   search: '',
@@ -1434,6 +1433,14 @@ const resultOptions = computed<SelectOption[]>(() => [
   { value: 'blocked', label: t('admin.riskControl.result.blocked') },
   { value: 'pass', label: t('admin.riskControl.result.pass') },
   { value: 'error', label: t('admin.riskControl.result.error') },
+])
+
+const actionOptions = computed<SelectOption[]>(() => [
+  { value: '', label: t('admin.riskControl.actionFilter.all') },
+  { value: 'keyword_block', label: t('admin.riskControl.actionFilter.keywordBlock') },
+  { value: 'block', label: t('admin.riskControl.actionFilter.block') },
+  { value: 'cyber_policy', label: t('admin.riskControl.actionFilter.cyberPolicy') },
+  { value: 'hash_block', label: t('admin.riskControl.actionFilter.hashBlock') },
 ])
 
 const endpointOptions = computed<SelectOption[]>(() => [
@@ -1643,11 +1650,34 @@ const cyberRequestBodyText = computed(() => {
   }
 })
 
-async function copyCyberRequestBody(): Promise<void> {
-  if (!cyberRequestAudit.value?.request_body) return
+const detailCopyAvailable = computed(() => {
+  if (!inputDetailRow.value) return false
+  if (inputDetailRow.value.action === 'cyber_policy') {
+    return Boolean(cyberRequestAudit.value?.request_body)
+  }
+  return Boolean(inputDetailRow.value.input_excerpt)
+})
+
+const detailCopyLabel = computed(() => {
+  if (inputDetailRow.value?.action === 'cyber_policy') {
+    return detailCopied.value
+      ? t('admin.riskControl.cyberRequestCopied')
+      : t('admin.riskControl.cyberRequestCopy')
+  }
+  return detailCopied.value
+    ? t('admin.riskControl.detailCopied')
+    : t('admin.riskControl.detailCopy')
+})
+
+async function copyInputDetail(): Promise<void> {
+  if (!detailCopyAvailable.value || !inputDetailRow.value) return
+  const isCyberRequest = inputDetailRow.value.action === 'cyber_policy'
+  const text = isCyberRequest
+    ? cyberRequestBodyText.value
+    : inputDetailRow.value.input_excerpt
   await copyToClipboard(
-    cyberRequestBodyText.value,
-    t('admin.riskControl.cyberRequestCopied'),
+    text,
+    t(isCyberRequest ? 'admin.riskControl.cyberRequestCopied' : 'admin.riskControl.detailCopied'),
   )
 }
 
@@ -1913,6 +1943,7 @@ async function loadLogs() {
       page: pagination.page,
       page_size: pagination.page_size,
       result: filters.result || undefined,
+      action: filters.action || undefined,
       group_id: filters.group_id || undefined,
       endpoint: filters.endpoint || undefined,
       search: filters.search || undefined,
@@ -1946,6 +1977,7 @@ function inputSummaryText(row: ContentModerationLog): string {
 }
 
 async function openInputDetail(row: ContentModerationLog) {
+  resetCopied()
   inputDetailRow.value = row
   cyberRequestAudit.value = null
   cyberAuditError.value = ''
@@ -1972,6 +2004,7 @@ async function openInputDetail(row: ContentModerationLog) {
 
 function closeInputDetail() {
   cyberAuditRequestSequence++
+  resetCopied()
   inputDetailRow.value = null
   cyberRequestAudit.value = null
   cyberAuditLoading.value = false
@@ -2217,6 +2250,7 @@ function modeDescription(mode: ModerationMode): string {
 function resultLabel(row: ContentModerationLog): string {
   if (row.action === 'cyber_policy') return t('admin.riskControl.action.cyberPolicy')
   if (row.action === 'keyword_block') return t('admin.riskControl.action.keywordBlock')
+  if (row.action === 'hash_block') return t('admin.riskControl.action.hashBlock')
   if (row.action === 'block') return t('admin.riskControl.action.block')
   if (row.action === 'error' || row.error) return t('admin.riskControl.action.error')
   if (row.flagged) return t('admin.riskControl.result.hit')
@@ -2224,7 +2258,7 @@ function resultLabel(row: ContentModerationLog): string {
 }
 
 function resultBadgeClass(row: ContentModerationLog): string {
-  if (row.action === 'block' || row.action === 'keyword_block' || row.action === 'cyber_policy') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  if (row.action === 'block' || row.action === 'keyword_block' || row.action === 'hash_block' || row.action === 'cyber_policy') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
   if (row.action === 'error' || row.error) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
   if (row.flagged) return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300'
   return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'

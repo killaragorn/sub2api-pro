@@ -69,6 +69,20 @@ describe('useClipboard', () => {
     expect(copied.value).toBe(false)
   })
 
+  it('可显式重置 copied 并取消旧定时器', async () => {
+    const { copied, copyToClipboard, resetCopied } = useClipboard()
+
+    await copyToClipboard('first')
+    vi.advanceTimersByTime(1000)
+    resetCopied()
+    expect(copied.value).toBe(false)
+
+    await copyToClipboard('second')
+    vi.advanceTimersByTime(1000)
+
+    expect(copied.value).toBe(true)
+  })
+
   it('复制成功时调用 showSuccess', async () => {
     const { copyToClipboard } = useClipboard()
 

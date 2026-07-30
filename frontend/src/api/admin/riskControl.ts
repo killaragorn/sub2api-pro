@@ -2,6 +2,7 @@ import { apiClient } from '../client'
 
 export type ModerationMode = 'off' | 'observe' | 'pre_block'
 export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
+export type ContentModerationAction = 'allow' | 'block' | 'hash_block' | 'keyword_block' | 'error' | 'cyber_policy'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
 
 export interface ContentModerationModelFilter {
@@ -178,7 +179,7 @@ export interface ContentModerationLog {
   provider: string
   model: string
   mode: string
-  action: string
+  action: ContentModerationAction
   flagged: boolean
   highest_category: string
   highest_score: number
@@ -211,6 +212,7 @@ export interface ListContentModerationLogsParams {
   page?: number
   page_size?: number
   result?: string
+  action?: ContentModerationAction
   group_id?: number
   endpoint?: string
   search?: string

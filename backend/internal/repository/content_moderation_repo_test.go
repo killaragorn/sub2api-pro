@@ -18,8 +18,30 @@ func TestBuildContentModerationLogWhere_BlockedIncludesAllBlockActions(t *testin
 
 	require.Empty(t, args)
 	sql := strings.Join(where, " AND ")
-	require.Contains(t, sql, "l.action IN ('block', 'keyword_block', 'hash_block')")
+	require.Contains(t, sql, "l.action IN ('block', 'keyword_block', 'hash_block', 'cyber_policy')")
 	require.NotContains(t, sql, "l.action = 'block'")
+}
+
+func TestBuildContentModerationLogWhere_ActionUsesParameterizedCondition(t *testing.T) {
+	groupID := int64(42)
+	where, args := buildContentModerationLogWhere(service.ContentModerationLogFilter{
+		Action:   service.ContentModerationActionKeywordBlock,
+		GroupID:  &groupID,
+		Endpoint: "/v1/responses",
+		Search:   "needle",
+	})
+
+	sql := strings.Join(where, " AND ")
+	require.Contains(t, sql, "l.action = $1")
+	require.Contains(t, sql, "l.group_id = $2")
+	require.Contains(t, sql, "l.endpoint = $3")
+	require.Contains(t, sql, "l.request_id ILIKE $4")
+	require.Equal(t, []any{
+		service.ContentModerationActionKeywordBlock,
+		groupID,
+		"/v1/responses",
+		"%needle%", "%needle%", "%needle%", "%needle%", "%needle%",
+	}, args)
 }
 
 func TestContentModerationRepositoryCountFlaggedByUserSince_ExcludesHashBlock(t *testing.T) {

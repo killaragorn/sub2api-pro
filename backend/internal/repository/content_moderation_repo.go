@@ -303,11 +303,14 @@ func buildContentModerationLogWhere(filter service.ContentModerationLogFilter) (
 	case "hit", "flagged":
 		where = append(where, "l.flagged = TRUE")
 	case "blocked", "block":
-		where = append(where, "l.action IN ('block', 'keyword_block', 'hash_block')")
+		where = append(where, "l.action IN ('block', 'keyword_block', 'hash_block', 'cyber_policy')")
 	case "pass", "allow":
 		where = append(where, "l.flagged = FALSE AND l.error = ''")
 	case "error":
 		where = append(where, "l.error <> ''")
+	}
+	if action := strings.TrimSpace(filter.Action); action != "" {
+		add("l.action = $%d", action)
 	}
 	if filter.GroupID != nil {
 		add("l.group_id = $%d", *filter.GroupID)

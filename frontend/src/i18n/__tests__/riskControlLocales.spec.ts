@@ -4,6 +4,23 @@ import en from '../locales/en'
 import zh from '../locales/zh'
 
 describe('risk control locale copy', () => {
+  it.each([
+    ['zh', zh],
+    ['en', en]
+  ] as const)('%s includes action filter and detail copy messages', (_locale, messages) => {
+    const riskControl = messages.admin.riskControl
+    expect(riskControl.actionFilter).toMatchObject({
+      all: expect.any(String),
+      keywordBlock: expect.any(String),
+      block: expect.any(String),
+      cyberPolicy: expect.any(String),
+      hashBlock: expect.any(String),
+    })
+    expect(riskControl.action.hashBlock).toEqual(expect.any(String))
+    expect(riskControl.detailCopy).toEqual(expect.any(String))
+    expect(riskControl.detailCopied).toEqual(expect.any(String))
+  })
+
   it('describes worker runtime as audit and pre-block record processing', () => {
     expect(zh.admin.riskControl.workerStatusHint).toContain('前置拦截记录任务')
     expect(zh.admin.riskControl.workerStatusHint).not.toContain('异步观察任务')

@@ -155,6 +155,11 @@ func (h *ContentModerationHandler) GetStatus(c *gin.Context) {
 
 func (h *ContentModerationHandler) ListLogs(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
+	action := strings.TrimSpace(c.Query("action"))
+	if action != "" && !isValidContentModerationAction(action) {
+		response.BadRequest(c, "Invalid action")
+		return
+	}
 	filter := service.ContentModerationLogFilter{
 		Pagination: pagination.PaginationParams{
 			Page:      page,
@@ -162,6 +167,7 @@ func (h *ContentModerationHandler) ListLogs(c *gin.Context) {
 			SortOrder: pagination.SortOrderDesc,
 		},
 		Result:   c.Query("result"),
+		Action:   action,
 		Endpoint: c.Query("endpoint"),
 		Search:   c.Query("search"),
 	}
@@ -198,6 +204,20 @@ func (h *ContentModerationHandler) ListLogs(c *gin.Context) {
 		return
 	}
 	response.Paginated(c, items, pageResult.Total, pageResult.Page, pageResult.PageSize)
+}
+
+func isValidContentModerationAction(action string) bool {
+	switch action {
+	case service.ContentModerationActionAllow,
+		service.ContentModerationActionBlock,
+		service.ContentModerationActionHashBlock,
+		service.ContentModerationActionKeywordBlock,
+		service.ContentModerationActionError,
+		service.ContentModerationActionCyberPolicy:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *ContentModerationHandler) GetCyberPolicyRequestAudit(c *gin.Context) {

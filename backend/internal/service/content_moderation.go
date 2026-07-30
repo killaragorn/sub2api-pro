@@ -434,6 +434,7 @@ var ErrCyberPolicyRequestAuditNotFound = infraerrors.NotFound(
 type ContentModerationLogFilter struct {
 	Pagination pagination.PaginationParams
 	Result     string
+	Action     string
 	GroupID    *int64
 	Endpoint   string
 	Search     string

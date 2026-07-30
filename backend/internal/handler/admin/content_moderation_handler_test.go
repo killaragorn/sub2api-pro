@@ -15,17 +15,21 @@ import (
 )
 
 type cyberRequestAuditHandlerRepo struct {
-	audit *service.CyberPolicyRequestAudit
-	err   error
-	calls int
+	audit      *service.CyberPolicyRequestAudit
+	err        error
+	calls      int
+	listFilter service.ContentModerationLogFilter
+	listCalls  int
 }
 
 func (r *cyberRequestAuditHandlerRepo) CreateLog(context.Context, *service.ContentModerationLog) error {
 	return nil
 }
 
-func (r *cyberRequestAuditHandlerRepo) ListLogs(context.Context, service.ContentModerationLogFilter) ([]service.ContentModerationLog, *pagination.PaginationResult, error) {
-	return nil, nil, nil
+func (r *cyberRequestAuditHandlerRepo) ListLogs(_ context.Context, filter service.ContentModerationLogFilter) ([]service.ContentModerationLog, *pagination.PaginationResult, error) {
+	r.listCalls++
+	r.listFilter = filter
+	return []service.ContentModerationLog{}, &pagination.PaginationResult{Page: filter.Pagination.Page, PageSize: filter.Pagination.PageSize}, nil
 }
 
 func (r *cyberRequestAuditHandlerRepo) GetCyberPolicyRequestAudit(context.Context, int64) (*service.CyberPolicyRequestAudit, error) {
@@ -47,6 +51,44 @@ func (r *cyberRequestAuditHandlerRepo) UpdateLogEmailSent(context.Context, int64
 
 func (r *cyberRequestAuditHandlerRepo) UpdateCyberPolicyOutcome(context.Context, int64, int, bool, bool) error {
 	return nil
+}
+
+func TestContentModerationHandlerListLogsPassesValidAction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &cyberRequestAuditHandlerRepo{}
+	handler := NewContentModerationHandler(service.NewContentModerationService(nil, repo, nil, nil, nil, nil, nil))
+	router := gin.New()
+	router.GET("/logs", handler.ListLogs)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/logs?action=keyword_block&page=2&page_size=15", nil)
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, 1, repo.listCalls)
+	require.Equal(t, service.ContentModerationActionKeywordBlock, repo.listFilter.Action)
+	require.Equal(t, 2, repo.listFilter.Pagination.Page)
+	require.Equal(t, 15, repo.listFilter.Pagination.PageSize)
+}
+
+func TestContentModerationHandlerListLogsRejectsInvalidAction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &cyberRequestAuditHandlerRepo{}
+	handler := NewContentModerationHandler(service.NewContentModerationService(nil, repo, nil, nil, nil, nil, nil))
+	router := gin.New()
+	router.GET("/logs", handler.ListLogs)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/logs?action=BLOCK", nil)
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Zero(t, repo.listCalls)
+	var response struct {
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Equal(t, "Invalid action", response.Message)
 }
 
 func TestContentModerationHandlerGetCyberPolicyRequestAudit(t *testing.T) {
