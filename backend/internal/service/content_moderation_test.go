@@ -439,6 +439,22 @@ func TestBuildContentModerationLog_RedactsInputExcerpt(t *testing.T) {
 	require.Contains(t, log.InputExcerpt, "[已脱敏]")
 }
 
+func TestBuildContentModerationLog_KeywordBlockKeepsFullRedactedInput(t *testing.T) {
+	svc := &ContentModerationService{}
+	cfg := defaultContentModerationConfig()
+	text := strings.Repeat("safe ", maxModerationExcerptRunes) + "sk-proj-1234567890abcdef blocked tail"
+
+	keywordLog := svc.buildLog(ContentModerationCheckInput{}, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1, nil, text, nil, nil, "")
+	otherLog := svc.buildLog(ContentModerationCheckInput{}, cfg, ContentModerationActionBlock, true, "sexual", 1, nil, text, nil, nil, "")
+
+	require.Contains(t, keywordLog.InputExcerpt, "blocked tail")
+	require.Contains(t, keywordLog.InputExcerpt, "[已脱敏]")
+	require.NotContains(t, keywordLog.InputExcerpt, "sk-proj-1234567890abcdef")
+	require.Greater(t, len([]rune(keywordLog.InputExcerpt)), maxModerationExcerptRunes)
+	require.Len(t, []rune(otherLog.InputExcerpt), maxModerationExcerptRunes)
+	require.NotContains(t, otherLog.InputExcerpt, "blocked tail")
+}
+
 func TestRedactContentModerationSecrets_LongHexAndTokens(t *testing.T) {
 	input := "你哈市多大事cf5bbdc4cd508f3aaf0d2070d529d4a4ac29099f8ecc357f696df28e1df91554 token=abc123456789xyz Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart https://example.com/private/path?token=abc123"
 
@@ -525,6 +541,119 @@ func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T
 	require.Equal(t, ContentModerationActionKeywordBlock, logs[0].Action)
 	require.Equal(t, contentModerationKeywordCategory, logs[0].HighestCategory)
 	require.Equal(t, "secret-token", logs[0].MatchedKeyword, "blocked log must record which keyword was hit")
+}
+
+func TestContentModerationCheck_OpenAIKeywordTextWiring(t *testing.T) {
+	tests := []struct {
+		name          string
+		provider      string
+		blocked       bool
+		wantExcerpt   string
+		forbidExcerpt string
+	}{
+		{
+			name:          "openai uses extended history",
+			provider:      PlatformOpenAI,
+			blocked:       true,
+			wantExcerpt:   "blocked-history safe_tool clean-latest",
+			forbidExcerpt: "tool-output",
+		},
+		{
+			name:     "non-openai keeps latest-input semantics",
+			provider: "anthropic",
+			blocked:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultContentModerationConfig()
+			cfg.Enabled = true
+			cfg.Mode = ContentModerationModePreBlock
+			cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordOnly
+			cfg.BlockedKeywords = []string{"blocked-history"}
+			rawCfg, err := json.Marshal(cfg)
+			require.NoError(t, err)
+
+			repo := &contentModerationTestRepo{}
+			svc := NewContentModerationService(
+				&contentModerationTestSettingRepo{values: map[string]string{
+					SettingKeyRiskControlEnabled:      "true",
+					SettingKeyContentModerationConfig: string(rawCfg),
+				}},
+				repo,
+				&contentModerationTestHashCache{},
+				nil,
+				nil,
+				nil,
+				nil,
+			)
+			body := []byte(`{"messages":[{"role":"user","content":"blocked-history"},{"role":"assistant","tool_calls":[{"function":{"name":"safe_tool","arguments":"blocked-arguments"}}]},{"role":"tool","content":"tool-output"},{"role":"user","content":"clean-latest"}]}`)
+
+			decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+				Provider: tt.provider,
+				Protocol: ContentModerationProtocolOpenAIChat,
+				Body:     body,
+			})
+
+			require.NoError(t, err)
+			require.Equal(t, tt.blocked, decision.Blocked)
+			if !tt.blocked {
+				require.Empty(t, repo.snapshotLogs())
+				return
+			}
+			logs := requireContentModerationLogCount(t, repo, 1)
+			require.Equal(t, tt.wantExcerpt, logs[0].InputExcerpt)
+			require.NotContains(t, logs[0].InputExcerpt, tt.forbidExcerpt)
+		})
+	}
+}
+
+func TestContentModerationCheck_OpenAIKeepsModerationAPIInputSeparate(t *testing.T) {
+	var moderationInput string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request moderationAPIRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		moderationInput, _ = request.Input.(string)
+		_ = json.NewEncoder(w).Encode(moderationAPIResponse{Results: []moderationAPIResult{{CategoryScores: map[string]float64{"sexual": 0.1}}}})
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.BlockedKeywords = []string{"never-matches"}
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		&contentModerationTestRepo{},
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	body := []byte(`{"instructions":"system instructions","input":[{"type":"message","role":"user","content":"historical user"},{"type":"message","role":"user","content":"latest user"}]}`)
+
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		Provider: PlatformOpenAI,
+		Protocol: ContentModerationProtocolOpenAIResponses,
+		Body:     body,
+	})
+
+	require.NoError(t, err)
+	require.True(t, decision.Allowed)
+	require.Equal(t, "latest user", moderationInput)
 }
 
 func TestContentModerationCheck_KeywordsIgnoredInObserveMode(t *testing.T) {

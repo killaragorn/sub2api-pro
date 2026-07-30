@@ -46,6 +46,38 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
 	return out
 }
 
+func extractOpenAIKeywordText(protocol string, body []byte) string {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ""
+	}
+	var keywordParts []string
+	switch protocol {
+	case ContentModerationProtocolOpenAIChat:
+		collectOpenAIChatKeywordText(gjson.GetBytes(body, "messages"), &keywordParts)
+		collectOpenAIToolNameTree(gjson.GetBytes(body, "tools"), &keywordParts)
+	case ContentModerationProtocolOpenAIResponses:
+		addModerationText(&keywordParts, gjson.GetBytes(body, "instructions").String())
+		collectOpenAIResponsesKeywordText(gjson.GetBytes(body, "input"), &keywordParts)
+		collectOpenAIToolNameTree(gjson.GetBytes(body, "tools"), &keywordParts)
+	case ContentModerationProtocolOpenAICodexMemory:
+		addModerationText(&keywordParts, gjson.GetBytes(body, "instructions").String())
+		collectOpenAICodexMemoryKeywordText(gjson.GetBytes(body, "traces"), &keywordParts)
+		collectOpenAIToolNameTree(gjson.GetBytes(body, "tools"), &keywordParts)
+	}
+	return normalizeContentModerationText(strings.Join(keywordParts, "\n"))
+}
+
+func usesExtendedOpenAIKeywordText(protocol string) bool {
+	switch protocol {
+	case ContentModerationProtocolOpenAIChat,
+		ContentModerationProtocolOpenAIResponses,
+		ContentModerationProtocolOpenAICodexMemory:
+		return true
+	default:
+		return false
+	}
+}
+
 func collectCodexMemoryTraceInput(traces gjson.Result, parts *[]string, images *[]string) {
 	if !traces.IsArray() {
 		return
@@ -66,6 +98,47 @@ func collectCodexMemoryTraceInput(traces gjson.Result, parts *[]string, images *
 			}
 			return true
 		})
+		return true
+	})
+}
+
+func collectOpenAICodexMemoryKeywordText(traces gjson.Result, parts *[]string) {
+	if !traces.IsArray() {
+		return
+	}
+	traces.ForEach(func(_, trace gjson.Result) bool {
+		items := trace.Get("items")
+		if !items.IsArray() {
+			return true
+		}
+		items.ForEach(func(_, item gjson.Result) bool {
+			collectOpenAIResponsesKeywordItem(item, parts)
+			return true
+		})
+		return true
+	})
+}
+
+func collectOpenAIChatKeywordText(messages gjson.Result, parts *[]string) {
+	if !messages.IsArray() {
+		return
+	}
+	messages.ForEach(func(_, message gjson.Result) bool {
+		role := strings.ToLower(strings.TrimSpace(message.Get("role").String()))
+		if role == "user" || role == "system" || role == "developer" {
+			collectOpenAIKeywordContentText(message.Get("content"), parts)
+		}
+		toolCalls := message.Get("tool_calls")
+		if toolCalls.IsArray() {
+			toolCalls.ForEach(func(_, call gjson.Result) bool {
+				addModerationText(parts, call.Get("function.name").String())
+				addModerationText(parts, call.Get("name").String())
+				return true
+			})
+		}
+		if functionCall := message.Get("function_call"); functionCall.IsObject() {
+			addModerationText(parts, functionCall.Get("name").String())
+		}
 		return true
 	})
 }
@@ -147,6 +220,22 @@ func isAnthropicSystemReminderText(text string) bool {
 	return strings.HasPrefix(strings.TrimSpace(text), "<system-reminder>")
 }
 
+func collectOpenAIResponsesKeywordText(input gjson.Result, parts *[]string) {
+	switch {
+	case !input.Exists():
+		return
+	case input.Type == gjson.String:
+		addModerationText(parts, input.String())
+	case input.IsArray():
+		input.ForEach(func(_, item gjson.Result) bool {
+			collectOpenAIResponsesKeywordItem(item, parts)
+			return true
+		})
+	case input.IsObject():
+		collectOpenAIResponsesKeywordItem(input, parts)
+	}
+}
+
 func collectLastResponsesInput(input gjson.Result, parts *[]string, images *[]string) {
 	switch {
 	case !input.Exists():
@@ -185,6 +274,81 @@ func isResponsesUserTextItem(item gjson.Result) bool {
 		return false
 	}
 	return responseItemHasModerationText(item)
+}
+
+func collectOpenAIResponsesKeywordItem(item gjson.Result, parts *[]string) {
+	if item.Type == gjson.String {
+		addModerationText(parts, item.String())
+		return
+	}
+	typeName := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+	role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+	if role == "user" || role == "system" || role == "developer" ||
+		(role == "" && (typeName == "" || typeName == "message" || typeName == "input_text")) {
+		collectOpenAIKeywordContentText(item.Get("content"), parts)
+		if typeName == "input_text" || item.Get("text").Exists() {
+			collectOpenAIKeywordContentText(item, parts)
+		}
+	}
+	collectOpenAIToolName(item, parts)
+}
+
+func collectOpenAIKeywordContentText(value gjson.Result, parts *[]string) {
+	switch {
+	case !value.Exists():
+		return
+	case value.Type == gjson.String:
+		addModerationText(parts, value.String())
+	case value.IsArray():
+		value.ForEach(func(_, item gjson.Result) bool {
+			collectOpenAIKeywordContentText(item, parts)
+			return true
+		})
+	case value.IsObject():
+		typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
+		switch typ {
+		case "", "text", "input_text", "message":
+			if value.Get("text").Exists() {
+				addModerationText(parts, value.Get("text").String())
+			}
+			if value.Get("content").Exists() {
+				collectOpenAIKeywordContentText(value.Get("content"), parts)
+			}
+		}
+	}
+}
+
+func collectOpenAIToolName(item gjson.Result, parts *[]string) {
+	typeName := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+	if strings.HasSuffix(typeName, "_call") || typeName == "mcp_approval_request" {
+		addModerationText(parts, item.Get("name").String())
+	}
+	if typeName == "mcp_list_tools" || typeName == "additional_tools" {
+		collectOpenAIToolNameTree(item.Get("tools"), parts)
+	}
+}
+
+func collectOpenAIToolNameTree(value gjson.Result, parts *[]string) {
+	switch {
+	case value.Type == gjson.String:
+		addModerationText(parts, value.String())
+	case value.IsArray():
+		value.ForEach(func(_, item gjson.Result) bool {
+			collectOpenAIToolNameTree(item, parts)
+			return true
+		})
+	case value.IsObject():
+		addModerationText(parts, value.Get("name").String())
+		addModerationText(parts, value.Get("function.name").String())
+		collectOpenAIToolNameTree(value.Get("tools"), parts)
+		collectOpenAIToolNameTree(value.Get("children"), parts)
+		allowedTools := value.Get("allowed_tools")
+		if allowedTools.IsArray() {
+			collectOpenAIToolNameTree(allowedTools, parts)
+		} else if allowedTools.IsObject() {
+			collectOpenAIToolNameTree(allowedTools.Get("tool_names"), parts)
+		}
+	}
 }
 
 func responseItemHasModerationText(item gjson.Result) bool {
@@ -332,9 +496,6 @@ func limitContentModerationImages(images []string) []string {
 func addModerationText(parts *[]string, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return
-	}
-	if strings.Contains(text, "<system-reminder>") {
 		return
 	}
 	*parts = append(*parts, text)
