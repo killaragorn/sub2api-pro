@@ -23,10 +23,8 @@ func newCyberBlockTestCtx(headers map[string]string, body string) (*gin.Context,
 	return c, []byte(body)
 }
 
-// TestCyberSessionBlockKey verifies F5a key derivation: explicit session signals
-// only (header session_id/conversation_id or body prompt_cache_key), apiKey
-// isolated, and EMPTY when no explicit signal (no content-derived fallback —
-// "不退化" decision).
+// TestCyberSessionBlockKey verifies the explicit-session key used by both
+// cyber and keyword policy state.
 func TestCyberSessionBlockKey(t *testing.T) {
 	c1, b1 := newCyberBlockTestCtx(map[string]string{"session_id": "sess-abc"}, `{}`)
 	k1 := CyberSessionBlockKey(101, c1, b1)
@@ -44,7 +42,8 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	c4, b4 := newCyberBlockTestCtx(nil, `{"prompt_cache_key":"pck-1"}`)
 	require.NotEmpty(t, CyberSessionBlockKey(101, c4, b4))
 
-	// No explicit signal → empty key → caller must skip blocking entirely.
+	// The shared explicit-session primitive stays empty without an identity;
+	// CyberPolicyBlockKey adds the message fallback separately.
 	c5, b5 := newCyberBlockTestCtx(nil, `{"input":"hello world"}`)
 	require.Empty(t, CyberSessionBlockKey(101, c5, b5))
 
@@ -83,19 +82,157 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	require.Equal(t, metadataKey, CyberSessionBlockKey(101, c10, b10))
 }
 
+func TestCyberPolicyBlockKeyFallsBackToLatestRealUserMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		body     string
+		minimal  string
+		older    string
+	}{
+		{
+			name:     "responses after tool output",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body: `{"input":[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"older request"}]},
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"latest request"}]},
+				{"type":"function_call","name":"lookup"},
+				{"type":"function_call_output","output":"result"}
+			]}`,
+			minimal: `{"input":"latest request"}`,
+			older:   `{"input":"older request"}`,
+		},
+		{
+			name:     "responses websocket envelope",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body: `{"type":"response.create","response":{"input":[
+				{"role":"user","content":[{"type":"input_text","text":"older request"}]},
+				{"role":"user","content":[{"type":"input_text","text":"latest request"}]},
+				{"type":"function_call_output","output":"result"}
+			]}}`,
+			minimal: `{"input":"latest request"}`,
+			older:   `{"input":"older request"}`,
+		},
+		{
+			name:     "chat after tool output",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body: `{"messages":[
+				{"role":"user","content":"older request"},
+				{"role":"assistant","content":"answer"},
+				{"role":"user","content":"latest request"},
+				{"role":"assistant","tool_calls":[{"function":{"name":"lookup"}}]},
+				{"role":"tool","content":"result"}
+			]}`,
+			minimal: `{"messages":[{"role":"user","content":"latest request"}]}`,
+			older:   `{"messages":[{"role":"user","content":"older request"}]}`,
+		},
+		{
+			name:     "chat responses shaped input",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body: `{"input":[
+				{"role":"user","content":[{"type":"input_text","text":"older request"}]},
+				{"role":"user","content":[{"type":"input_text","text":"latest request"}]},
+				{"type":"function_call_output","output":"result"}
+			]}`,
+			minimal: `{"input":"latest request"}`,
+			older:   `{"input":"older request"}`,
+		},
+		{
+			name:     "anthropic after tool result",
+			protocol: ContentModerationProtocolAnthropicMessages,
+			body: `{"messages":[
+				{"role":"user","content":"older request"},
+				{"role":"assistant","content":"answer"},
+				{"role":"user","content":"latest request"},
+				{"role":"assistant","content":[{"type":"tool_use","name":"lookup"}]},
+				{"role":"user","content":[{"type":"tool_result","content":"result"}]}
+			]}`,
+			minimal: `{"messages":[{"role":"user","content":"latest request"}]}`,
+			older:   `{"messages":[{"role":"user","content":"older request"}]}`,
+		},
+	}
+
+	keys := make(map[string]string)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, body := newCyberBlockTestCtx(nil, tt.body)
+			key := CyberPolicyBlockKey(101, c, tt.protocol, body)
+			minimalCtx, minimalBody := newCyberBlockTestCtx(nil, tt.minimal)
+			olderCtx, olderBody := newCyberBlockTestCtx(nil, tt.older)
+
+			require.Contains(t, key, "message:v1:")
+			require.Equal(t, CyberPolicyBlockKey(101, minimalCtx, tt.protocol, minimalBody), key)
+			require.NotEqual(t, CyberPolicyBlockKey(101, olderCtx, tt.protocol, olderBody), key)
+			keys[tt.protocol] = key
+		})
+	}
+	require.NotEqual(t, keys[ContentModerationProtocolOpenAIResponses], keys[ContentModerationProtocolOpenAIChat])
+	require.NotEqual(t, keys[ContentModerationProtocolOpenAIChat], keys[ContentModerationProtocolAnthropicMessages])
+}
+
+func TestCyberPolicyBlockKeyMessageFallbackIsolationAndNormalization(t *testing.T) {
+	c1, b1 := newCyberBlockTestCtx(nil, `{"input":"  repeated\n  message "}`)
+	c2, b2 := newCyberBlockTestCtx(nil, `{"input":"repeated message"}`)
+	c3, b3 := newCyberBlockTestCtx(nil, `{"input":"different"}`)
+	c4, b4 := newCyberBlockTestCtx(nil, `{"input":[{"type":"input_text","text":"roleless user input"}]}`)
+
+	key := CyberPolicyBlockKey(101, c1, ContentModerationProtocolOpenAIResponses, b1)
+	require.Equal(t, key, CyberPolicyBlockKey(101, c2, ContentModerationProtocolOpenAIResponses, b2))
+	require.NotEqual(t, key, CyberPolicyBlockKey(202, c2, ContentModerationProtocolOpenAIResponses, b2))
+	require.NotEqual(t, key, CyberPolicyBlockKey(101, c3, ContentModerationProtocolOpenAIResponses, b3))
+	require.NotEmpty(t, CyberPolicyBlockKey(101, c4, ContentModerationProtocolOpenAIResponses, b4))
+}
+
+func TestCyberPolicyBlockKeyExplicitSessionTakesPrecedence(t *testing.T) {
+	c1, b1 := newCyberBlockTestCtx(map[string]string{"session-id": "stable-session"}, `{"input":"first message"}`)
+	c2, b2 := newCyberBlockTestCtx(map[string]string{"session-id": "stable-session"}, `{"input":"second message"}`)
+	require.Equal(t,
+		CyberSessionBlockKey(101, c1, b1),
+		CyberPolicyBlockKey(101, c1, ContentModerationProtocolOpenAIResponses, b1),
+	)
+	require.Equal(t,
+		CyberPolicyBlockKey(101, c1, ContentModerationProtocolOpenAIResponses, b1),
+		CyberPolicyBlockKey(101, c2, ContentModerationProtocolOpenAIResponses, b2),
+	)
+}
+
+func TestCyberPolicyBlockKeyWithoutUserTextFailsOpen(t *testing.T) {
+	tests := []struct {
+		protocol string
+		body     string
+	}{
+		{ContentModerationProtocolOpenAIResponses, `{"input":[{"type":"function_call_output","output":"result"}]}`},
+		{ContentModerationProtocolOpenAIResponses, `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://example.com/image.png"}]}]}`},
+		{ContentModerationProtocolOpenAIChat, `{"messages":[{"role":"tool","content":"result"}]}`},
+		{ContentModerationProtocolOpenAIChat, `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}`},
+		{ContentModerationProtocolAnthropicMessages, `{"messages":[{"role":"user","content":[{"type":"tool_result","content":"result"}]}]}`},
+		{ContentModerationProtocolAnthropicMessages, `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/image.png"}}]}]}`},
+		{ContentModerationProtocolOpenAIResponses, `not-json`},
+	}
+	for _, tt := range tests {
+		c, body := newCyberBlockTestCtx(nil, tt.body)
+		require.Empty(t, CyberPolicyBlockKey(101, c, tt.protocol, body))
+	}
+}
+
 // --- fakes ---
 
 type fakeCyberBlockStore struct {
-	blocked map[string]bool
+	blocked      map[string]bool
+	lastWriteTTL time.Duration
+	lastWriteErr error
 }
 
 var _ CyberSessionBlockStore = (*fakeCyberBlockStore)(nil)
 
-func (f *fakeCyberBlockStore) SetCyberSessionBlocked(_ context.Context, key string, _ time.Duration) error {
+func (f *fakeCyberBlockStore) SetCyberSessionBlocked(ctx context.Context, key string, ttl time.Duration) error {
 	if f.blocked == nil {
 		f.blocked = map[string]bool{}
 	}
 	f.blocked[key] = true
+	f.lastWriteTTL = ttl
+	f.lastWriteErr = ctx.Err()
 	return nil
 }
 
@@ -237,6 +374,25 @@ func TestKeywordSessionBlockClaimSurvivesCanceledRequestContext(t *testing.T) {
 	require.True(t, claimed)
 	require.NoError(t, combo.keywordClaimCtxErr, "the store must receive a context detached from request cancellation")
 	require.True(t, svc.IsKeywordSessionBlocked(context.Background(), "canceled-request"))
+}
+
+func TestCyberSessionBlockWriteUsesConfiguredTTLAndDetachedContext(t *testing.T) {
+	settingSvc := &SettingService{
+		settingRepo: &fakeSettingRepo{vals: map[string]string{
+			SettingKeyCyberSessionBlockEnabled:    "true",
+			SettingKeyCyberSessionBlockTTLSeconds: "36000",
+		}},
+	}
+	combo := &comboCacheAndStore{}
+	svc := &OpenAIGatewayService{cache: combo, settingService: settingSvc}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	svc.MarkCyberSessionBlocked(ctx, "message:v1:test")
+
+	require.NoError(t, combo.store.lastWriteErr)
+	require.Equal(t, 10*time.Hour, combo.store.lastWriteTTL)
+	require.True(t, svc.IsCyberSessionBlocked(context.Background(), "message:v1:test"))
 }
 
 func TestCyberSessionBlock_RoundTrip(t *testing.T) {

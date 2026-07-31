@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -18,7 +19,7 @@ type CyberSessionBlockStore interface {
 	IsCyberSessionBlocked(ctx context.Context, key string) (bool, error)
 }
 
-const keywordSessionWriteTimeout = 2 * time.Second
+const policySessionWriteTimeout = 2 * time.Second
 
 // KeywordSessionBlockStore stores terminal local keyword-policy blocks in a
 // namespace separate from cyber-policy state.
@@ -41,6 +42,28 @@ func OpenAISessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
 
 func CyberSessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
 	return OpenAISessionBlockKey(apiKeyID, c, body)
+}
+
+// CyberPolicyBlockKey preserves explicit-session blocking when an identity is
+// present. Stateless requests fall back to the normalized text of their latest
+// user message, isolated by API key and protocol. Empty or non-textual inputs
+// remain fail-open.
+func CyberPolicyBlockKey(apiKeyID int64, c *gin.Context, protocol string, body []byte) string {
+	if sessionKey := CyberSessionBlockKey(apiKeyID, c, body); sessionKey != "" {
+		return sessionKey
+	}
+	text := ExtractLastUserMessageText(protocol, body)
+	if text == "" {
+		return ""
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("cyber-last-user:v1\x00"))
+	_, _ = hash.Write([]byte(strconv.FormatInt(apiKeyID, 10)))
+	_, _ = hash.Write([]byte{'\x00'})
+	_, _ = hash.Write([]byte(protocol))
+	_, _ = hash.Write([]byte{'\x00'})
+	_, _ = hash.Write([]byte(text))
+	return "message:v1:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func OpenAIKeywordSessionBlockKey(sessionKey, policyVersion string) string {
@@ -101,7 +124,9 @@ func (s *OpenAIGatewayService) MarkCyberSessionBlocked(ctx context.Context, key 
 	if store == nil {
 		return
 	}
-	if err := store.SetCyberSessionBlocked(ctx, key, ttl); err != nil {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), policySessionWriteTimeout)
+	defer cancel()
+	if err := store.SetCyberSessionBlocked(persistCtx, key, ttl); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber session block write failed: err=%v", err)
 	}
 }
@@ -156,7 +181,7 @@ func (s *OpenAIGatewayService) ClaimKeywordSessionBlocked(ctx context.Context, k
 		return false, false
 	}
 	_, ttl := s.CyberSessionBlockRuntime(ctx)
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keywordSessionWriteTimeout)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), policySessionWriteTimeout)
 	defer cancel()
 	claimed, err := store.ClaimKeywordSessionBlocked(persistCtx, key, ttl)
 	if err != nil {

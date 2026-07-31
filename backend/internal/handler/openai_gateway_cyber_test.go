@@ -1,11 +1,17 @@
 package handler
 
 import (
+	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -16,6 +22,62 @@ func newTestGinContext() *gin.Context {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	return c
+}
+
+type cyberPolicyHandlerTestCache struct {
+	mu      sync.Mutex
+	blocked map[string]bool
+	ttls    map[string]time.Duration
+}
+
+var _ service.GatewayCache = (*cyberPolicyHandlerTestCache)(nil)
+var _ service.CyberSessionBlockStore = (*cyberPolicyHandlerTestCache)(nil)
+
+func (c *cyberPolicyHandlerTestCache) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, nil
+}
+func (c *cyberPolicyHandlerTestCache) SetSessionAccountID(context.Context, int64, string, int64, time.Duration) error {
+	return nil
+}
+func (c *cyberPolicyHandlerTestCache) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+func (c *cyberPolicyHandlerTestCache) DeleteSessionAccountID(context.Context, int64, string) error {
+	return nil
+}
+func (c *cyberPolicyHandlerTestCache) SetCyberSessionBlocked(_ context.Context, key string, ttl time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blocked == nil {
+		c.blocked = make(map[string]bool)
+	}
+	if c.ttls == nil {
+		c.ttls = make(map[string]time.Duration)
+	}
+	c.blocked[key] = true
+	c.ttls[key] = ttl
+	return nil
+}
+func (c *cyberPolicyHandlerTestCache) IsCyberSessionBlocked(_ context.Context, key string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blocked[key], nil
+}
+func (c *cyberPolicyHandlerTestCache) ttl(key string) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ttls[key]
+}
+
+func newCyberPolicyHandlerGatewayService(cache service.GatewayCache) *service.OpenAIGatewayService {
+	settings := service.NewSettingService(&contentModerationHandlerSettingRepo{values: map[string]string{
+		service.SettingKeyCyberSessionBlockEnabled:    "true",
+		service.SettingKeyCyberSessionBlockTTLSeconds: "36000",
+	}}, nil)
+	return service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, cache, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil,
+	)
 }
 
 // TestRecordCyberPolicyIfMarked_NoMark verifies that when no cyber mark is set,
@@ -154,18 +216,60 @@ func TestBuildCyberSessionBlockedOpsEntry(t *testing.T) {
 }
 
 // TestRejectIfCyberSessionBlocked_FailOpen verifies fail-open paths: nil handler
-// services, no explicit session signal, and (implicitly) disabled switch all
-// pass the request through.
+// services and requests without either a session identity or user text pass
+// through.
 func TestRejectIfCyberSessionBlocked_FailOpen(t *testing.T) {
 	c := newTestGinContext()
 	c.Request = httptest.NewRequest("POST", "/openai/v1/responses", strings.NewReader(`{}`))
 
 	h := &OpenAIGatewayHandler{}
-	require.False(t, h.rejectIfCyberSessionBlocked(c, nil, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil apiKey → pass")
+	require.False(t, h.rejectIfCyberSessionBlocked(c, nil, service.ContentModerationProtocolOpenAIResponses, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil apiKey → pass")
 
 	h2 := &OpenAIGatewayHandler{gatewayService: nil}
 	key := &service.APIKey{ID: 1}
-	require.False(t, h2.rejectIfCyberSessionBlocked(c, key, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil gateway service → pass")
+	require.False(t, h2.rejectIfCyberSessionBlocked(c, key, service.ContentModerationProtocolOpenAIResponses, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil gateway service → pass")
+}
+
+func TestRejectIfCyberSessionBlocked_UsesMessageFallback(t *testing.T) {
+	cache := &cyberPolicyHandlerTestCache{}
+	gateway := newCyberPolicyHandlerGatewayService(cache)
+	h := &OpenAIGatewayHandler{gatewayService: gateway}
+	apiKey := &service.APIKey{ID: 101}
+	body := []byte(`{"model":"gpt-5","input":"same blocked message"}`)
+
+	seedCtx := newTestGinContext()
+	seedCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(string(body)))
+	blockKey := service.CyberPolicyBlockKey(apiKey.ID, seedCtx, service.ContentModerationProtocolOpenAIResponses, body)
+	require.NotEmpty(t, blockKey)
+	gateway.MarkCyberSessionBlocked(seedCtx.Request.Context(), blockKey)
+
+	request := func(key *service.APIKey, requestBody []byte) (*httptest.ResponseRecorder, bool) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(string(requestBody)))
+		return recorder, h.rejectIfCyberSessionBlocked(
+			c,
+			key,
+			service.ContentModerationProtocolOpenAIResponses,
+			requestBody,
+			"gpt-5",
+			cyberBlockFormatResponses,
+		)
+	}
+
+	blockedRecorder, blocked := request(apiKey, body)
+	require.True(t, blocked)
+	require.Equal(t, http.StatusForbidden, blockedRecorder.Code)
+	require.Contains(t, blockedRecorder.Header().Get("Content-Type"), "application/json")
+	require.Contains(t, blockedRecorder.Body.String(), `"code":"session_blocked_by_cyber_policy"`)
+
+	otherMessageRecorder, blocked := request(apiKey, []byte(`{"model":"gpt-5","input":"different message"}`))
+	require.False(t, blocked)
+	require.Equal(t, http.StatusOK, otherMessageRecorder.Code)
+
+	otherKeyRecorder, blocked := request(&service.APIKey{ID: 202}, body)
+	require.False(t, blocked)
+	require.Equal(t, http.StatusOK, otherKeyRecorder.Code)
 }
 
 // TestRecordCyberPolicyIfMarked_BlockKeyPlumbed verifies the 6th param is
@@ -178,6 +282,126 @@ func TestRecordCyberPolicyIfMarked_BlockKeyPlumbed(t *testing.T) {
 	require.NotPanics(t, func() {
 		h.recordCyberPolicyIfMarked(c, nil, nil, nil, "gpt-5", service.ContentModerationProtocolOpenAIResponses, nil, true, "deadbeef", service.ChannelUsageFields{}, "")
 	})
+}
+
+func TestRecordCyberPolicyIfMarked_WritesBlockBeforeReturning(t *testing.T) {
+	cache := &cyberPolicyHandlerTestCache{}
+	gateway := newCyberPolicyHandlerGatewayService(cache)
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "blocked", UpstreamStatus: 400})
+
+	const blockKey = "message:v1:synchronous-write"
+	h := &OpenAIGatewayHandler{gatewayService: gateway}
+	h.recordCyberPolicyIfMarked(
+		c,
+		&service.APIKey{ID: 101},
+		nil,
+		nil,
+		"gpt-5",
+		service.ContentModerationProtocolOpenAIResponses,
+		nil,
+		true,
+		blockKey,
+		service.ChannelUsageFields{},
+		"",
+	)
+
+	require.True(t, gateway.IsCyberSessionBlocked(context.Background(), blockKey))
+	require.Equal(t, 10*time.Hour, cache.ttl(blockKey))
+}
+
+func TestOpenAIWSCyberBlockKeyResolver_UpdatesAndInheritsExplicitIdentity(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+	resolver := newOpenAIWSCyberBlockKeyResolver(101, c)
+
+	first := []byte(`{"type":"response.create","prompt_cache_key":"session-a","response":{"input":"first"}}`)
+	second := []byte(`{"type":"response.create","prompt_cache_key":"session-b","response":{"input":"second"}}`)
+	withoutIdentity := []byte(`{"type":"response.create","response":{"input":"third"}}`)
+
+	firstKey := resolver.Resolve(first)
+	secondKey := resolver.Resolve(second)
+	require.Equal(t, service.CyberSessionBlockKey(101, c, first), firstKey)
+	require.Equal(t, service.CyberSessionBlockKey(101, c, second), secondKey)
+	require.NotEqual(t, firstKey, secondKey)
+	require.Equal(t, secondKey, resolver.Resolve(withoutIdentity), "a frame without identity must inherit the latest explicit session")
+}
+
+func TestOpenAIWSCyberBlockKeyResolver_FrameIdentityOverridesHandshakeAndIsInherited(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+	c.Request.Header.Set("session-id", "handshake-session")
+	resolver := newOpenAIWSCyberBlockKeyResolver(101, c)
+
+	withoutIdentity := []byte(`{"type":"response.create","response":{"input":"message"}}`)
+	handshakeKey := service.CyberSessionBlockKey(101, c, nil)
+	require.NotEmpty(t, handshakeKey)
+	require.Equal(t, handshakeKey, resolver.Resolve(withoutIdentity))
+
+	frame := []byte(`{"type":"response.create","prompt_cache_key":"frame-session","response":{"input":"stateful"}}`)
+	frameKey := service.CyberSessionBlockKey(101, nil, frame)
+	require.NotEmpty(t, frameKey)
+	require.NotEqual(t, handshakeKey, frameKey)
+	require.Equal(t, frameKey, resolver.Resolve(frame))
+	require.Equal(t, frameKey, resolver.Resolve(withoutIdentity), "an identity-less frame must inherit the latest frame identity, not the handshake header")
+}
+
+func TestOpenAIWSCyberBlockKeyResolver_UsesMessageUntilExplicitIdentityAppears(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+	resolver := newOpenAIWSCyberBlockKeyResolver(101, c)
+	messageOnly := []byte(`{"type":"response.create","response":{"input":"stateless message"}}`)
+
+	require.Equal(t,
+		service.CyberPolicyBlockKey(101, c, service.ContentModerationProtocolOpenAIResponses, messageOnly),
+		resolver.Resolve(messageOnly),
+	)
+
+	explicit := []byte(`{"type":"response.create","prompt_cache_key":"session-a","response":{"input":"stateful"}}`)
+	explicitKey := resolver.Resolve(explicit)
+	require.NotEmpty(t, explicitKey)
+	require.Equal(t, explicitKey, resolver.Resolve(messageOnly))
+}
+
+func TestOpenAIResponsesWebSocket_MessageFallbackBlocksFirstFrame(t *testing.T) {
+	cache := &cyberPolicyHandlerTestCache{}
+	gateway := newCyberPolicyHandlerGatewayService(cache)
+	payload := []byte(`{"type":"response.create","model":"gpt-5","response":{"input":"blocked websocket message"}}`)
+	seedCtx := newTestGinContext()
+	seedCtx.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+	blockKey := service.CyberPolicyBlockKey(101, seedCtx, service.ContentModerationProtocolOpenAIResponses, payload)
+	require.NotEmpty(t, blockKey)
+	gateway.MarkCyberSessionBlocked(seedCtx.Request.Context(), blockKey)
+
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	h.gatewayService = gateway
+	server := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer server.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	conn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(server.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() { _ = conn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = conn.Write(writeCtx, coderws.MessageText, payload)
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, message, err := conn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, err)
+	require.Contains(t, string(message), `"code":"session_blocked_by_cyber_policy"`)
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = conn.Read(closeCtx)
+	cancelClose()
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
 }
 
 // TestBuildCyberPolicyOpsErrorEntry_StatusCode verifies F6: the ops error log
