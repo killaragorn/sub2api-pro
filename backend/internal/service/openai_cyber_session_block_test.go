@@ -54,6 +54,33 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	require.NotEmpty(t, k6)
 	c6b, b6b := newCyberBlockTestCtx(map[string]string{"conversation_id": "conv-xyz"}, `{}`)
 	require.Equal(t, k6, CyberSessionBlockKey(101, c6b, b6b), "conversation_id key must be stable")
+
+	// Native Codex accepts client_metadata.session_id as the upstream session.
+	c7, b7 := newCyberBlockTestCtx(nil, `{"client_metadata":{"session_id":"metadata-session"}}`)
+	metadataKey := CyberSessionBlockKey(101, c7, b7)
+	require.NotEmpty(t, metadataKey)
+	c7b, b7b := newCyberBlockTestCtx(nil, `{"client_metadata":{"session_id":"metadata-session"}}`)
+	require.Equal(t, metadataKey, CyberSessionBlockKey(101, c7b, b7b))
+
+	// Match native Codex precedence: prompt_cache_key, official/legacy session
+	// headers, client_metadata.session_id, then compatibility headers.
+	c8, b8 := newCyberBlockTestCtx(map[string]string{
+		"session-id":      "header-session",
+		"conversation_id": "conversation-session",
+	}, `{"prompt_cache_key":"body-session","client_metadata":{"session_id":"metadata-session"}}`)
+	c8Body, b8Body := newCyberBlockTestCtx(nil, `{"prompt_cache_key":"body-session"}`)
+	require.Equal(t, CyberSessionBlockKey(101, c8Body, b8Body), CyberSessionBlockKey(101, c8, b8))
+
+	c9, b9 := newCyberBlockTestCtx(map[string]string{
+		"session-id": "header-session",
+	}, `{"client_metadata":{"session_id":"metadata-session"}}`)
+	c9Header, b9Header := newCyberBlockTestCtx(map[string]string{"session-id": "header-session"}, `{}`)
+	require.Equal(t, CyberSessionBlockKey(101, c9Header, b9Header), CyberSessionBlockKey(101, c9, b9))
+
+	c10, b10 := newCyberBlockTestCtx(map[string]string{
+		"conversation_id": "conversation-session",
+	}, `{"client_metadata":{"session_id":"metadata-session"}}`)
+	require.Equal(t, metadataKey, CyberSessionBlockKey(101, c10, b10))
 }
 
 // --- fakes ---
@@ -115,11 +142,14 @@ var _ SettingRepository = (*fakeSettingRepo)(nil)
 // CyberSessionBlockStore (delegates to fakeCyberBlockStore) so it can be
 // injected as s.cache and successfully type-asserted to CyberSessionBlockStore.
 type comboCacheAndStore struct {
-	store fakeCyberBlockStore
+	store              fakeCyberBlockStore
+	keywordStore       fakeCyberBlockStore
+	keywordClaimCtxErr error
 }
 
 var _ GatewayCache = (*comboCacheAndStore)(nil)
 var _ CyberSessionBlockStore = (*comboCacheAndStore)(nil)
+var _ KeywordSessionBlockStore = (*comboCacheAndStore)(nil)
 
 func (c *comboCacheAndStore) GetSessionAccountID(_ context.Context, _ int64, _ string) (int64, error) {
 	return 0, errors.New("stub")
@@ -139,6 +169,17 @@ func (c *comboCacheAndStore) SetCyberSessionBlocked(ctx context.Context, key str
 func (c *comboCacheAndStore) IsCyberSessionBlocked(ctx context.Context, key string) (bool, error) {
 	return c.store.IsCyberSessionBlocked(ctx, key)
 }
+func (c *comboCacheAndStore) ClaimKeywordSessionBlocked(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	c.keywordClaimCtxErr = ctx.Err()
+	blocked, err := c.keywordStore.IsCyberSessionBlocked(ctx, key)
+	if err != nil || blocked {
+		return false, err
+	}
+	return true, c.keywordStore.SetCyberSessionBlocked(ctx, key, ttl)
+}
+func (c *comboCacheAndStore) IsKeywordSessionBlocked(ctx context.Context, key string) (bool, error) {
+	return c.keywordStore.IsCyberSessionBlocked(ctx, key)
+}
 
 // --- tests ---
 
@@ -157,6 +198,47 @@ func TestIsCyberSessionBlocked_EmptyKeyAndNilService(t *testing.T) {
 // TestCyberSessionBlock_RoundTrip exercises the type-assertion success path:
 // mark a session blocked via a combo cache+store, then confirm IsCyberSessionBlocked
 // returns true, and an unrelated key returns false.
+func TestKeywordSessionBlock_RoundTripWhenCyberSwitchDisabled(t *testing.T) {
+	settingSvc := &SettingService{
+		settingRepo: &fakeSettingRepo{
+			vals: map[string]string{
+				SettingKeyCyberSessionBlockEnabled:    "false",
+				SettingKeyCyberSessionBlockTTLSeconds: "60",
+			},
+		},
+	}
+	combo := &comboCacheAndStore{}
+	svc := &OpenAIGatewayService{cache: combo, settingService: settingSvc}
+
+	ctx := context.Background()
+	const testKey = "keyword-deadbeef"
+	require.False(t, svc.IsKeywordSessionBlocked(ctx, testKey))
+	claimed, available := svc.ClaimKeywordSessionBlocked(ctx, testKey)
+	require.True(t, available)
+	require.True(t, claimed)
+	require.True(t, svc.IsKeywordSessionBlocked(ctx, testKey))
+	require.False(t, svc.IsCyberSessionBlocked(ctx, testKey), "keyword state must not leak into cyber namespace")
+}
+
+func TestKeywordSessionBlockClaimSurvivesCanceledRequestContext(t *testing.T) {
+	settingSvc := &SettingService{
+		settingRepo: &fakeSettingRepo{vals: map[string]string{
+			SettingKeyCyberSessionBlockEnabled:    "false",
+			SettingKeyCyberSessionBlockTTLSeconds: "60",
+		}},
+	}
+	combo := &comboCacheAndStore{}
+	svc := &OpenAIGatewayService{cache: combo, settingService: settingSvc}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	claimed, available := svc.ClaimKeywordSessionBlocked(ctx, "canceled-request")
+	require.True(t, available)
+	require.True(t, claimed)
+	require.NoError(t, combo.keywordClaimCtxErr, "the store must receive a context detached from request cancellation")
+	require.True(t, svc.IsKeywordSessionBlocked(context.Background(), "canceled-request"))
+}
+
 func TestCyberSessionBlock_RoundTrip(t *testing.T) {
 	// SettingService with only settingRepo set — GetCyberSessionBlockRuntime needs
 	// nothing else (cfg/proxyRepo/etc. are not touched by this code path).

@@ -12,6 +12,10 @@ import (
 )
 
 const securityAuditCompletedContextKey = "sub2api.security_audit.completed"
+const keywordSessionBlockKeyContextKey = "sub2api.keyword_session_block.key"
+
+const keywordSessionBlockedErrorCode = "session_blocked_by_content_policy"
+const keywordSessionBlockedClientMsg = "该会话已被关键词策略屏蔽，请开启新会话 / This session is blocked by keyword policy, please start a new session"
 
 // cachesSecurityAuditCompletion reports whether a successful audit may be
 // reused for the rest of the gin request. WebSocket turns share one Context
@@ -33,17 +37,69 @@ func (h *GatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, 
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte) *securityaudit.Decision {
-	if h == nil {
-		return nil
-	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+	return h.checkOpenAISecurityAuditStage(c, reqLog, apiKey, subject, protocol, model, body, "http")
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
+	return h.checkOpenAISecurityAuditStage(c, reqLog, apiKey, subject, protocol, model, body, stage)
+}
+
+func (h *OpenAIGatewayHandler) checkOpenAISecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
+	blockKey := ""
+	if keywordSessionBlockingProtocol(protocol) && h.gatewayService != nil && h.contentModerationService != nil &&
+		apiKey != nil && c != nil && c.Request != nil {
+		sessionKey := service.OpenAISessionBlockKey(apiKey.ID, c, body)
+		if sessionKey != "" {
+			c.Set(keywordSessionBlockKeyContextKey, sessionKey)
+		} else if cached, ok := c.Get(keywordSessionBlockKeyContextKey); ok {
+			sessionKey, _ = cached.(string)
+		}
+		input := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
+		policy := h.contentModerationService.KeywordSessionPolicy(c.Request.Context(), input)
+		if policy.Active {
+			blockKey = service.OpenAIKeywordSessionBlockKey(sessionKey, policy.Version)
+			if h.gatewayService.IsKeywordSessionBlocked(c.Request.Context(), blockKey) {
+				return keywordSessionBlockedDecision()
+			}
+			if policy.WouldBlock {
+				claimed, available := h.gatewayService.ClaimKeywordSessionBlocked(c.Request.Context(), blockKey)
+				if available && !claimed {
+					return keywordSessionBlockedDecision()
+				}
+			}
+		}
+	}
+
 	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
+}
+
+func keywordSessionBlockingProtocol(protocol string) bool {
+	switch strings.TrimSpace(protocol) {
+	case service.ContentModerationProtocolOpenAIChat,
+		service.ContentModerationProtocolOpenAIResponses,
+		service.ContentModerationProtocolOpenAICodexMemory:
+		return true
+	default:
+		return false
+	}
+}
+
+func isKeywordBlockDecision(decision *securityaudit.Decision) bool {
+	return decision != nil && decision.Legacy != nil && decision.Legacy.Blocked &&
+		decision.Legacy.Action == service.ContentModerationActionKeywordBlock
+}
+
+func keywordSessionBlockedDecision() *securityaudit.Decision {
+	return &securityaudit.Decision{
+		Kind:           securityaudit.DecisionBlock,
+		HTTPStatus:     http.StatusBadRequest,
+		ErrorCode:      keywordSessionBlockedErrorCode,
+		ClientMessage:  keywordSessionBlockedClientMsg,
+		AllowNextStage: false,
+	}
 }
 
 func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {

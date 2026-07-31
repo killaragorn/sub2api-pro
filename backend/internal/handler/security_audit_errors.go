@@ -18,6 +18,10 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 	if decision == nil {
 		return
 	}
+	if isKeywordBlockDecision(decision) || securityAuditErrorCode(decision) == keywordSessionBlockedErrorCode {
+		h.writeOpenAIContentPolicyError(c, securityAuditErrorCode(decision), securityAuditMessage(decision))
+		return
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.errorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -28,6 +32,19 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 	}
 	c.JSON(securityAuditStatus(decision), gin.H{"error": gin.H{
 		"type": errType, "code": securityAuditErrorCode(decision), "message": securityAuditMessage(decision),
+	}})
+}
+
+func (h *OpenAIGatewayHandler) writeOpenAIContentPolicyError(c *gin.Context, code, message string) {
+	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		service.MarkOpsStreamError(c, "invalid_request_error", message, http.StatusBadRequest)
+		if writeResponsesFailedSSE(c, "invalid_prompt", message) {
+			return
+		}
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+		"type": "invalid_request_error", "code": code, "message": message,
 	}})
 }
 
@@ -134,8 +151,9 @@ func writeSecurityAuditWSError(ctx context.Context, conn *coderws.Conn, decision
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	status := securityAuditStatus(decision)
 	payload, err := json.Marshal(gin.H{
-		"event_id": "evt_prompt_guard_rejected", "type": "error",
+		"event_id": "evt_prompt_guard_rejected", "type": "error", "status": status,
 		"error": gin.H{"type": "invalid_request_error", "code": securityAuditErrorCode(decision), "message": securityAuditMessage(decision)},
 	})
 	if err != nil {
@@ -159,7 +177,8 @@ func securityAuditWSCloseStatus(decision *securityaudit.Decision) coderws.Status
 	if decision == nil {
 		return coderws.StatusInternalError
 	}
-	if decision.Legacy != nil && decision.Legacy.Blocked {
+	if (decision.Legacy != nil && decision.Legacy.Blocked) ||
+		securityAuditErrorCode(decision) == keywordSessionBlockedErrorCode {
 		return coderws.StatusPolicyViolation
 	}
 	if decision.Kind == securityaudit.DecisionBlock {

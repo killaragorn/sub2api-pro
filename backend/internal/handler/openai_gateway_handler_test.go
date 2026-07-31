@@ -1242,6 +1242,27 @@ func (r *contentModerationHandlerTestRepo) UpdateCyberPolicyOutcome(ctx context.
 	return nil
 }
 
+func TestContentModerationWebSocketStatusOnlyRewritesKeywordBlock(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		status int
+		want   int
+	}{
+		{name: "keyword block", action: service.ContentModerationActionKeywordBlock, status: http.StatusForbidden, want: http.StatusBadRequest},
+		{name: "api block", action: service.ContentModerationActionBlock, status: http.StatusForbidden, want: http.StatusForbidden},
+		{name: "hash block", action: service.ContentModerationActionHashBlock, status: http.StatusForbidden, want: http.StatusForbidden},
+		{name: "custom status", action: service.ContentModerationActionBlock, status: http.StatusUnavailableForLegalReasons, want: http.StatusUnavailableForLegalReasons},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, contentModerationWebSocketStatus(&service.ContentModerationDecision{
+				Blocked: true, Action: tt.action, StatusCode: tt.status,
+			}))
+		})
+	}
+}
+
 func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1322,15 +1343,25 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
 	_, payload, readErr := clientConn.Read(readCtx)
 	cancelRead()
-	if readErr == nil {
-		require.Contains(t, string(payload), "content_policy_violation")
-		require.Contains(t, string(payload), "内容审计测试阻断")
-	} else {
-		var closeErr coderws.CloseError
-		require.ErrorAs(t, readErr, &closeErr)
-		require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
-		require.Contains(t, closeErr.Reason, "内容审计测试阻断")
-	}
+	require.NoError(t, readErr)
+	require.JSONEq(t, `{
+		"event_id":"evt_content_moderation_blocked",
+		"type":"error",
+		"status":403,
+		"error":{
+			"type":"invalid_request_error",
+			"code":"content_policy_violation",
+			"message":"内容审计测试阻断"
+		}
+	}`, string(payload))
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeReadErr := clientConn.Read(closeCtx)
+	cancelClose()
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, closeReadErr, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+	require.Contains(t, closeErr.Reason, "内容审计测试阻断")
 	var logs []service.ContentModerationLog
 	require.Eventually(t, func() bool {
 		logs = repo.logSnapshot()

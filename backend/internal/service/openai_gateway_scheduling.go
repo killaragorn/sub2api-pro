@@ -72,6 +72,41 @@ func explicitOpenAISessionID(c *gin.Context, body []byte) string {
 	return sessionID
 }
 
+func explicitOpenAICodexSessionID(c *gin.Context, body []byte, includeMetadata bool) string {
+	if len(body) > 0 {
+		if sessionID := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); sessionID != "" {
+			return sessionID
+		}
+	}
+	if c != nil {
+		for _, header := range explicitOpenAIHeaderSessionNames[:2] {
+			if sessionID := strings.TrimSpace(c.GetHeader(header)); sessionID != "" {
+				return sessionID
+			}
+		}
+	}
+	if includeMetadata && len(body) > 0 {
+		return strings.TrimSpace(gjson.GetBytes(body, "client_metadata.session_id").String())
+	}
+	return ""
+}
+
+// explicitOpenAITerminalSessionID follows native Codex session precedence and
+// then accepts the compatibility session headers used by other clients.
+func explicitOpenAITerminalSessionID(c *gin.Context, body []byte) string {
+	if sessionID := explicitOpenAICodexSessionID(c, body, true); sessionID != "" {
+		return sessionID
+	}
+	if c != nil {
+		for _, header := range explicitOpenAIHeaderSessionNames[2:] {
+			if sessionID := strings.TrimSpace(c.GetHeader(header)); sessionID != "" {
+				return sessionID
+			}
+		}
+	}
+	return ""
+}
+
 // explicitOpenAIRequestSessionID extends the common OpenAI session signals
 // with Grok's native conversation header only for requests authenticated to a
 // Grok group. This keeps an unrelated x-grok-conv-id header from changing

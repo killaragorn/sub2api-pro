@@ -172,6 +172,12 @@ type ContentModerationConfig struct {
 	CyberPolicyExcludeFromBanCount bool `json:"cyber_policy_exclude_from_ban_count"`
 }
 
+type ContentModerationKeywordSessionPolicy struct {
+	Version    string
+	Active     bool
+	WouldBlock bool
+}
+
 type ContentModerationConfigView struct {
 	Enabled                        bool                            `json:"enabled"`
 	Mode                           string                          `json:"mode"`
@@ -1657,6 +1663,38 @@ func (s *contentModerationRuntimeSnapshot) matchBlockedKeyword(text string) (str
 		return s.keywordMatcher.Match(text)
 	}
 	return matchBlockedKeyword(text, s.config.BlockedKeywords)
+}
+
+func (s *ContentModerationService) KeywordSessionPolicy(ctx context.Context, input ContentModerationCheckInput) ContentModerationKeywordSessionPolicy {
+	if s == nil || s.settingRepo == nil || s.repo == nil {
+		return ContentModerationKeywordSessionPolicy{}
+	}
+	snapshot, err := s.loadRuntimeSnapshot(ctx)
+	if err != nil || snapshot == nil || snapshot.config == nil {
+		return ContentModerationKeywordSessionPolicy{}
+	}
+	cfg := snapshot.config
+	if !snapshot.riskControlEnabled || !cfg.Enabled || cfg.Mode != ContentModerationModePreBlock ||
+		cfg.KeywordBlockingMode == ContentModerationKeywordModeAPIOnly || len(cfg.BlockedKeywords) == 0 ||
+		!cfg.includesGroup(input.GroupID) || !cfg.includesModel(input.Model) {
+		return ContentModerationKeywordSessionPolicy{}
+	}
+	digest := sha256.New()
+	_, _ = digest.Write(snapshot.configDigest[:])
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(input.Provider))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(input.Protocol))
+	keywordText := ExtractContentModerationInput(input.Protocol, input.Body).Text
+	if strings.EqualFold(strings.TrimSpace(input.Provider), PlatformOpenAI) && usesExtendedOpenAIKeywordText(input.Protocol) {
+		keywordText = extractOpenAIKeywordText(input.Protocol, input.Body)
+	}
+	_, wouldBlock := snapshot.matchBlockedKeyword(keywordText)
+	return ContentModerationKeywordSessionPolicy{
+		Version:    hex.EncodeToString(digest.Sum(nil)),
+		Active:     true,
+		WouldBlock: wouldBlock,
+	}
 }
 
 func (s *ContentModerationService) isRiskControlEnabled(ctx context.Context) bool {

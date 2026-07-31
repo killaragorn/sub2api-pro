@@ -2800,6 +2800,13 @@ func closeOpenAIWSFailoverExhausted(conn *coderws.Conn, failoverErr *service.Ups
 	}
 }
 
+func contentModerationWebSocketStatus(decision *service.ContentModerationDecision) int {
+	if decision != nil && decision.Action == service.ContentModerationActionKeywordBlock {
+		return http.StatusBadRequest
+	}
+	return contentModerationStatus(decision)
+}
+
 func writeContentModerationWSError(ctx context.Context, conn *coderws.Conn, decision *service.ContentModerationDecision) {
 	if conn == nil || decision == nil {
 		return
@@ -2811,9 +2818,11 @@ func writeContentModerationWSError(ctx context.Context, conn *coderws.Conn, deci
 	if message == "" {
 		message = "content moderation blocked this request"
 	}
+	status := contentModerationWebSocketStatus(decision)
 	payload, err := json.Marshal(gin.H{
 		"event_id": "evt_content_moderation_blocked",
 		"type":     "error",
+		"status":   status,
 		"error": gin.H{
 			"type":    "invalid_request_error",
 			"code":    contentModerationErrorCode(decision),
@@ -2821,7 +2830,7 @@ func writeContentModerationWSError(ctx context.Context, conn *coderws.Conn, deci
 		},
 	})
 	if err != nil {
-		payload = []byte(`{"event_id":"evt_content_moderation_blocked","type":"error","error":{"type":"invalid_request_error","code":"content_policy_violation","message":"content moderation blocked this request"}}`)
+		return
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

@@ -66,11 +66,13 @@ func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64
 	return c.rdb.Del(ctx, key, sessionRollbackGuardKey(key)).Err()
 }
 
-// Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
+// Compile-time assertions for optional gateway policy/session stores.
 var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
+var _ service.KeywordSessionBlockStore = (*gatewayCache)(nil)
 var _ service.LiveCallStore = (*gatewayCache)(nil)
 
 const cyberSessionBlockPrefix = "cyber_session_block:"
+const keywordSessionBlockPrefix = "keyword_session_block:"
 
 // SetCyberSessionBlocked 把被 cyber_policy 命中的会话写入屏蔽表（TTL 自动过期）。
 // 存储值 "1" 作为存在标记（IsCyberSessionBlocked 只检查 key 是否存在，不读值）。
@@ -81,6 +83,18 @@ func (c *gatewayCache) SetCyberSessionBlocked(ctx context.Context, key string, t
 // IsCyberSessionBlocked 查询会话是否在屏蔽表中。
 func (c *gatewayCache) IsCyberSessionBlocked(ctx context.Context, key string) (bool, error) {
 	n, err := c.rdb.Exists(ctx, cyberSessionBlockPrefix+key).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (c *gatewayCache) ClaimKeywordSessionBlocked(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	return c.rdb.SetNX(ctx, keywordSessionBlockPrefix+key, "1", ttl).Result()
+}
+
+func (c *gatewayCache) IsKeywordSessionBlocked(ctx context.Context, key string) (bool, error) {
+	n, err := c.rdb.Exists(ctx, keywordSessionBlockPrefix+key).Result()
 	if err != nil {
 		return false, err
 	}

@@ -18,17 +18,36 @@ type CyberSessionBlockStore interface {
 	IsCyberSessionBlocked(ctx context.Context, key string) (bool, error)
 }
 
-// CyberSessionBlockKey 派生会话屏蔽 key：仅用显式会话标识（header
-// session_id/conversation_id 或 body prompt_cache_key），混入 apiKeyID 隔离后
-// sha256。无显式标识返回空串——调用方必须放行（粒度决策：不退化到
-// user/apikey/内容派生）。
-func CyberSessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
-	raw := explicitOpenAISessionID(c, body)
+const keywordSessionWriteTimeout = 2 * time.Second
+
+// KeywordSessionBlockStore stores terminal local keyword-policy blocks in a
+// namespace separate from cyber-policy state.
+type KeywordSessionBlockStore interface {
+	ClaimKeywordSessionBlocked(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	IsKeywordSessionBlocked(ctx context.Context, key string) (bool, error)
+}
+
+// OpenAISessionBlockKey derives a policy-block key only from explicit session
+// identifiers. It never falls back to API-key-wide or content-derived blocking.
+func OpenAISessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
+	raw := explicitOpenAITerminalSessionID(c, body)
 	if raw == "" {
 		return ""
 	}
 	isolated := isolateOpenAISessionID(apiKeyID, raw)
 	sum := sha256.Sum256([]byte(isolated))
+	return hex.EncodeToString(sum[:])
+}
+
+func CyberSessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
+	return OpenAISessionBlockKey(apiKeyID, c, body)
+}
+
+func OpenAIKeywordSessionBlockKey(sessionKey, policyVersion string) string {
+	if sessionKey == "" || policyVersion == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(sessionKey + ":" + policyVersion))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -42,6 +61,17 @@ func (s *OpenAIGatewayService) cyberSessionBlockStore() CyberSessionBlockStore {
 		return nil
 	}
 	store, ok := s.cache.(CyberSessionBlockStore)
+	if !ok {
+		return nil
+	}
+	return store
+}
+
+func (s *OpenAIGatewayService) keywordSessionBlockStore() KeywordSessionBlockStore {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	store, ok := s.cache.(KeywordSessionBlockStore)
 	if !ok {
 		return nil
 	}
@@ -96,4 +126,42 @@ func (s *OpenAIGatewayService) IsCyberSessionBlocked(ctx context.Context, key st
 		return false
 	}
 	return blocked
+}
+
+func (s *OpenAIGatewayService) IsKeywordSessionBlocked(ctx context.Context, key string) bool {
+	if key == "" {
+		return false
+	}
+	store := s.keywordSessionBlockStore()
+	if store == nil {
+		return false
+	}
+	blocked, err := store.IsKeywordSessionBlocked(ctx, key)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "keyword session block read failed: err=%v", err)
+		return false
+	}
+	return blocked
+}
+
+// ClaimKeywordSessionBlocked atomically creates a terminal block before the
+// winning request records its local keyword hit. A false result means another
+// request already claimed the same policy-scoped session.
+func (s *OpenAIGatewayService) ClaimKeywordSessionBlocked(ctx context.Context, key string) (claimed bool, available bool) {
+	if key == "" {
+		return false, false
+	}
+	store := s.keywordSessionBlockStore()
+	if store == nil {
+		return false, false
+	}
+	_, ttl := s.CyberSessionBlockRuntime(ctx)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keywordSessionWriteTimeout)
+	defer cancel()
+	claimed, err := store.ClaimKeywordSessionBlocked(persistCtx, key, ttl)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "keyword session block claim failed: err=%v", err)
+		return false, false
+	}
+	return claimed, true
 }

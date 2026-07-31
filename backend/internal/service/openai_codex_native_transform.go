@@ -530,16 +530,7 @@ func resolveOpenAICodexUpstreamIdentity(
 	compact bool,
 ) openAICodexUpstreamIdentity {
 	previousIdentity, hasPreviousIdentity := openAICodexUpstreamIdentityFromContext(c)
-	rawSessionID := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	if rawSessionID == "" && c != nil && c.Request != nil {
-		rawSessionID = strings.TrimSpace(c.Request.Header.Get(openAIOfficialSessionIDHeader))
-		if rawSessionID == "" {
-			rawSessionID = strings.TrimSpace(c.Request.Header.Get("session_id"))
-		}
-	}
-	if rawSessionID == "" && !compact {
-		rawSessionID = strings.TrimSpace(gjson.GetBytes(body, "client_metadata.session_id").String())
-	}
+	rawSessionID := explicitOpenAICodexSessionID(c, body, !compact)
 	if rawSessionID == "" && compact {
 		rawSessionID = resolveOpenAICompactSessionID(c)
 	}

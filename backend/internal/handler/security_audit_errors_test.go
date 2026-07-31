@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -141,6 +142,38 @@ func TestPromptGuardWebSocketCloseMappingGolden(t *testing.T) {
 	require.Equal(t, securityaudit.ErrorCodeUnavailable, securityAuditWSCloseReason(promptGuardDecision(securityaudit.DecisionUnavailable)))
 	require.Equal(t, int64(1013), int64(securityAuditWSCloseStatus(promptGuardDecision(securityaudit.DecisionInvalid))))
 	require.Equal(t, securityaudit.ErrorCodeInvalidResponse, securityAuditWSCloseReason(promptGuardDecision(securityaudit.DecisionInvalid)))
+}
+
+func TestKeywordModerationUsesCodexTerminalHTTPError(t *testing.T) {
+	legacy := &securityaudit.Decision{
+		Kind: securityaudit.DecisionBlock, HTTPStatus: http.StatusForbidden,
+		ErrorCode: "content_policy_violation", ClientMessage: "keyword blocked",
+		Legacy: &securityaudit.LegacyDecision{
+			Blocked: true, StatusCode: http.StatusForbidden, ErrorCode: "content_policy_violation",
+			Message: "keyword blocked", Action: "keyword_block",
+		},
+	}
+	c, recorder := securityAuditErrorTestContext(t)
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, legacy)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
+	require.Equal(t, "invalid_request_error", errorObject["type"])
+	require.Equal(t, "content_policy_violation", errorObject["code"])
+	require.Equal(t, "keyword blocked", errorObject["message"])
+}
+
+func TestKeywordSessionBlockUsesCodexTerminalHTTPError(t *testing.T) {
+	decision := keywordSessionBlockedDecision()
+	c, recorder := securityAuditErrorTestContext(t)
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Equal(t, coderws.StatusPolicyViolation, securityAuditWSCloseStatus(decision))
+	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
+	require.Equal(t, keywordSessionBlockedErrorCode, errorObject["code"])
+	require.Equal(t, keywordSessionBlockedClientMsg, errorObject["message"])
 }
 
 func TestLegacyModerationErrorKeepsExistingClientPriority(t *testing.T) {
