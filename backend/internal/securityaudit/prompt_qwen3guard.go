@@ -105,8 +105,9 @@ func ParseQwen3Guard(content string, enabledScanners []string) (*NormalizedResul
 				return nil, &GuardError{Code: ErrorCodeInvalidResponse}
 			}
 			categoryLine = strings.TrimSpace(line[len("categories:"):])
+		case strings.HasPrefix(lower, "refusal:"):
 		default:
-			// Auxiliary Guard fields, such as Refusal, do not affect audit decisions.
+			return nil, &GuardError{Code: ErrorCodeInvalidResponse}
 		}
 	}
 	if categoryLine == "" {
