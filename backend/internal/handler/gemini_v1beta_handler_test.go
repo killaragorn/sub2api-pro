@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -141,6 +142,42 @@ func TestGeminiV1BetaHandler_GetModelAntigravityFallback(t *testing.T) {
 			require.Equal(t, tt.expectedBehavior, behavior)
 		})
 	}
+}
+
+func TestResolvedSafeGeminiModelName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("composite alias validates resolved model", func(t *testing.T) {
+		ctx := service.WithCompositeRouteDecision(context.Background(), service.CompositeRouteDecision{
+			Matched:       true,
+			PublicModel:   "openrouter/gemini-pro",
+			UpstreamModel: "gemini-2.5-pro",
+		})
+
+		model, ok := resolvedSafeGeminiModelName(ctx, "openrouter/gemini-pro")
+		require.True(t, ok)
+		require.Equal(t, "gemini-2.5-pro", model)
+	})
+
+	t.Run("unsafe resolved model is rejected", func(t *testing.T) {
+		ctx := service.WithCompositeRouteDecision(context.Background(), service.CompositeRouteDecision{
+			Matched:       true,
+			PublicModel:   "safe-alias",
+			UpstreamModel: "../gemini-pro",
+		})
+
+		_, ok := resolvedSafeGeminiModelName(ctx, "safe-alias")
+		require.False(t, ok)
+	})
+
+	t.Run("direct model is validated", func(t *testing.T) {
+		model, ok := resolvedSafeGeminiModelName(context.Background(), "gemini-2.5-pro")
+		require.True(t, ok)
+		require.Equal(t, "gemini-2.5-pro", model)
+
+		_, ok = resolvedSafeGeminiModelName(context.Background(), "provider/gemini-pro")
+		require.False(t, ok)
+	})
 }
 
 func TestShouldFallbackGeminiModel_KnownFallbackOn404(t *testing.T) {

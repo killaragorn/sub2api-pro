@@ -43,6 +43,8 @@ archives:
       - LICENSE*
       - README*
       - deploy/*
+      - src: backend/resources
+        dst: resources
 
 checksum:
   name_template: 'checksums.txt'

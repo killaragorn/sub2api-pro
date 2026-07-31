@@ -98,14 +98,10 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		googleError(c, http.StatusBadRequest, "Missing model in URL")
 		return
 	}
-	// 模型名会被拼进上游 URL 的 path，先在入口校验片段合规性，
-	// 见 service/upstream_path_guard.go。
-	if !service.IsSafeGeminiModelPathSegment(modelName) {
+	modelName, ok = resolvedSafeGeminiModelName(c.Request.Context(), modelName)
+	if !ok {
 		googleError(c, http.StatusBadRequest, "Invalid model in URL")
 		return
-	}
-	if resolvedModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context()); ok && strings.TrimSpace(resolvedModel) != "" {
-		modelName = strings.TrimSpace(resolvedModel)
 	}
 
 	// 强制 antigravity 模式：返回 antigravity 模型信息
@@ -175,14 +171,10 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		googleError(c, http.StatusNotFound, err.Error())
 		return
 	}
-	// URL 里的模型名最终会被拼进上游 /v1beta/models/{model}:{action}，
-	// 先在入口校验片段合规性，见 service/upstream_path_guard.go。
-	if !service.IsSafeGeminiModelPathSegment(modelName) {
+	modelName, ok = resolvedSafeGeminiModelName(c.Request.Context(), modelName)
+	if !ok {
 		googleError(c, http.StatusBadRequest, "Invalid model in URL")
 		return
-	}
-	if resolvedModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context()); ok && strings.TrimSpace(resolvedModel) != "" {
-		modelName = strings.TrimSpace(resolvedModel)
 	}
 
 	stream := action == "streamGenerateContent"
@@ -581,6 +573,14 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func resolvedSafeGeminiModelName(ctx context.Context, requestedModel string) (string, bool) {
+	modelName := strings.TrimSpace(requestedModel)
+	if resolvedModel, ok := service.ResolvedUpstreamModelFromContext(ctx); ok {
+		modelName = resolvedModel
+	}
+	return modelName, service.IsSafeGeminiModelPathSegment(modelName)
 }
 
 func parseGeminiModelAction(rest string) (model string, action string, err error) {

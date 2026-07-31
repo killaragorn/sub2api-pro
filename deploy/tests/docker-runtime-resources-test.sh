@@ -28,6 +28,8 @@ test -s backend/resources/model-pricing/model_prices_and_context_window.json || 
 
 assert_line Dockerfile.goreleaser 'COPY --chown=sub2api:sub2api backend/resources /app/resources'
 assert_line deploy/Dockerfile 'COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources'
+assert_line .goreleaser.yaml '      - src: backend/resources'
+assert_line .goreleaser.yaml '        dst: resources'
 assert_count .goreleaser.yaml '      - backend/resources' 2
 assert_count .goreleaser.simple.yaml '      - backend/resources' 1
 
