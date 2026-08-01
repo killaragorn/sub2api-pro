@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -915,6 +916,108 @@ func TestClassifyOpsClientBusinessLimitedMarkerExcludesCustomPolicyDenialFromSLA
 	require.True(t, isBusinessLimited)
 	require.Equal(t, "client", errorOwner)
 	require.Equal(t, "client_request", errorSource)
+}
+
+func TestClassifyOpsSecurityAuditErrorsExcludedFromSLA(t *testing.T) {
+	tests := []struct {
+		name       string
+		errType    string
+		message    string
+		code       string
+		status     int
+		category   string
+		wantPhase  string
+		wantOwner  string
+		wantSource string
+	}{
+		{
+			name:       "content audit block",
+			errType:    "invalid_request_error",
+			message:    "keyword blocked",
+			code:       "content_policy_violation",
+			status:     http.StatusBadRequest,
+			category:   service.OpsSLAExclusionCategorySecurityAuditBlock,
+			wantPhase:  "request",
+			wantOwner:  "client",
+			wantSource: "client_request",
+		},
+		{
+			name:       "prompt audit block",
+			errType:    "permission_error",
+			message:    "提示词安全审计拒绝了该请求，请调整输入后重试",
+			code:       "prompt_guard_blocked",
+			status:     http.StatusForbidden,
+			category:   service.OpsSLAExclusionCategorySecurityAuditBlock,
+			wantPhase:  "request",
+			wantOwner:  "client",
+			wantSource: "client_request",
+		},
+		{
+			name:       "prompt audit unavailable",
+			errType:    "api_error",
+			message:    "提示词安全审计暂时不可用，请稍后重试",
+			code:       "prompt_guard_unavailable",
+			status:     http.StatusServiceUnavailable,
+			category:   service.OpsSLAExclusionCategorySecurityAuditUnavailable,
+			wantPhase:  "internal",
+			wantOwner:  "platform",
+			wantSource: "gateway",
+		},
+		{
+			name:       "prompt audit invalid response",
+			errType:    "api_error",
+			message:    "提示词安全审计暂时不可用，请稍后重试",
+			code:       "prompt_guard_invalid_response",
+			status:     http.StatusServiceUnavailable,
+			category:   service.OpsSLAExclusionCategorySecurityAuditInvalid,
+			wantPhase:  "internal",
+			wantOwner:  "platform",
+			wantSource: "gateway",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			service.MarkOpsSLAExcluded(c, tt.category, tt.code)
+
+			errType := normalizeOpsErrorType(tt.errType, tt.code)
+			phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, errType, tt.message, tt.code, tt.status)
+
+			require.Equal(t, tt.wantPhase, phase)
+			require.False(t, isBusinessLimited)
+			require.Equal(t, tt.wantOwner, errorOwner)
+			require.Equal(t, tt.wantSource, errorSource)
+		})
+	}
+}
+
+func TestOpsErrorLoggerMiddlewarePersistsSecurityAuditSLAExclusion(t *testing.T) {
+	setupOpsErrorLogTestQueue(t, 4)
+	gin.SetMode(gin.TestMode)
+
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(OpsErrorLoggerMiddleware(ops))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, promptGuardDecision(securityaudit.DecisionBlock))
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+	job := <-opsErrorLogQueue
+	require.NotNil(t, job.entry)
+	require.True(t, job.entry.IsSLAExcluded)
+	require.Equal(t, securityaudit.ErrorCodeBlocked, job.entry.SLAExclusionReason)
+	require.False(t, job.entry.IsBusinessLimited)
+	require.Equal(t, "request", job.entry.ErrorPhase)
+	require.Equal(t, "client", job.entry.ErrorOwner)
+	require.Equal(t, "client_request", job.entry.ErrorSource)
 }
 
 func TestClassifyOpsOtherErrorsStillCountForSLA(t *testing.T) {

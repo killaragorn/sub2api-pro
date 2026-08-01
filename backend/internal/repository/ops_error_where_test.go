@@ -38,6 +38,19 @@ func TestBuildOpsErrorLogsWhere_UserScopedFilters(t *testing.T) {
 	}
 }
 
+func TestBuildOpsErrorLogsWhere_SeparatesSLAExclusionsFromBusinessLimits(t *testing.T) {
+	errorsWhere, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "errors"})
+	if !strings.Contains(errorsWhere, "COALESCE(e.is_business_limited,false) = false") ||
+		!strings.Contains(errorsWhere, "COALESCE(e.is_sla_excluded,false) = false") {
+		t.Fatalf("errors view must exclude both business limits and explicit SLA exclusions: %s", errorsWhere)
+	}
+
+	excludedWhere, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "excluded"})
+	if !strings.Contains(excludedWhere, "COALESCE(e.is_business_limited,false) = true OR COALESCE(e.is_sla_excluded,false) = true") {
+		t.Fatalf("excluded view must include both exclusion categories: %s", excludedWhere)
+	}
+}
+
 func TestBuildOpsErrorLogsWhere_ModelFuzzy(t *testing.T) {
 	// 默认（ModelFuzzy=false）保持精确匹配
 	exact := &service.OpsErrorLogFilter{Model: "claude"}

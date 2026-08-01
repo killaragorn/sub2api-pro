@@ -95,7 +95,9 @@ type OpsErrorLogDetail struct {
 	TimeToFirstTokenMs *int64 `json:"time_to_first_token_ms"`
 
 	// vNext metric semantics
-	IsBusinessLimited bool `json:"is_business_limited"`
+	IsBusinessLimited  bool   `json:"is_business_limited"`
+	IsSLAExcluded      bool   `json:"is_sla_excluded"`
+	SLAExclusionReason string `json:"sla_exclusion_reason,omitempty"`
 
 	// Bound (non-deleted) key prefix, snapshotted at error time.
 	APIKeyPrefix string `json:"api_key_prefix,omitempty"`
@@ -151,8 +153,8 @@ type OpsErrorLogFilter struct {
 	ErrorTypesAny  []string
 
 	// View controls error categorization for list endpoints.
-	// - errors: show actionable errors (exclude business-limited / 429 / 529)
-	// - excluded: only show excluded errors
+	// - errors: show SLA-scoped actionable errors
+	// - excluded: show business-limited and explicitly SLA-excluded errors
 	// - all: show everything
 	View string
 

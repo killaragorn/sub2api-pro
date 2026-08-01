@@ -348,6 +348,7 @@ export default {
         account: 'Account',
         latency: 'Request Duration',
         businessLimited: 'Business Limited',
+        slaExcluded: 'SLA Exclusion Reason',
         requestPath: 'Request Path',
         inboundEndpoint: 'Inbound Endpoint',
         upstreamEndpoint: 'Upstream Endpoint',

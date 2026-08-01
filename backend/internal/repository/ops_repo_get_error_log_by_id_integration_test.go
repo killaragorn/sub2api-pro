@@ -31,18 +31,22 @@ func TestGetErrorLogByID_APIKeyPrefixAndUpstreamStatus(t *testing.T) {
 	require.Empty(t, plain.APIKeyPrefix)
 
 	validID, err := repo.InsertErrorLog(ctx, &service.OpsInsertErrorLogInput{
-		ErrorPhase:   "request",
-		ErrorType:    "api_error",
-		Severity:     "error",
-		StatusCode:   402,
-		CreatedAt:    time.Now(),
-		APIKeyPrefix: "sk-valid",
+		ErrorPhase:         "request",
+		ErrorType:          "api_error",
+		Severity:           "error",
+		StatusCode:         402,
+		CreatedAt:          time.Now(),
+		APIKeyPrefix:       "sk-valid",
+		IsSLAExcluded:      true,
+		SLAExclusionReason: "prompt_guard_blocked",
 	})
 	require.NoError(t, err)
 
 	valid, err := repo.GetErrorLogByID(ctx, validID)
 	require.NoError(t, err)
 	require.Equal(t, "sk-valid", valid.APIKeyPrefix)
+	require.True(t, valid.IsSLAExcluded)
+	require.Equal(t, "prompt_guard_blocked", valid.SLAExclusionReason)
 
 	zero := 0
 	credentialFailureID, err := repo.InsertErrorLog(ctx, &service.OpsInsertErrorLogInput{

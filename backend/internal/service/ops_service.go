@@ -479,6 +479,10 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	if entry.ErrorType == "" {
 		entry.ErrorType = "api_error"
 	}
+	entry.SLAExclusionReason = truncateString(strings.TrimSpace(entry.SLAExclusionReason), 128)
+	if !entry.IsSLAExcluded {
+		entry.SLAExclusionReason = ""
+	}
 
 	// Credential acquisition is a gateway/account-auth stage, not an inference
 	// HTTP attempt. Enforce that ownership at the persistence boundary so an

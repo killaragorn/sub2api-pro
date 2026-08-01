@@ -26,6 +26,19 @@ func TestWriteOpenAIFastPolicyBlockedResponseMarksBusinessLimited(t *testing.T) 
 	require.Equal(t, OpsClientBusinessLimitedReasonLocalPolicyDenied, reason)
 }
 
+func TestOpsSLAExclusionMarkerPreservesCategoryAndReason(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	MarkOpsSLAExcluded(c, OpsSLAExclusionCategorySecurityAuditBlock, "prompt_guard_blocked")
+
+	exclusion, ok := GetOpsSLAExclusion(c)
+	require.True(t, ok)
+	require.Equal(t, OpsSLAExclusionCategorySecurityAuditBlock, exclusion.Category)
+	require.Equal(t, "prompt_guard_blocked", exclusion.Reason)
+}
+
 func TestOpsMetricsCollectorQueryErrorCountsExcludesCountTokens(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -34,7 +47,7 @@ func TestOpsMetricsCollectorQueryErrorCountsExcludesCountTokens(t *testing.T) {
 	start := time.Date(2026, 5, 26, 10, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 
-	mock.ExpectQuery(`(?s)FROM ops_error_logs\s+WHERE created_at >= \$1 AND created_at < \$2\s+AND is_count_tokens = FALSE`).
+	mock.ExpectQuery(`(?s)NOT is_business_limited AND NOT is_sla_excluded.*FROM ops_error_logs\s+WHERE created_at >= \$1 AND created_at < \$2\s+AND is_count_tokens = FALSE`).
 		WithArgs(start, end).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"error_total",

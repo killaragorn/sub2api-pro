@@ -51,6 +51,12 @@ const (
 	OpsClientBusinessLimitedReasonAPIKeyGroupUnassigned  = "api_key_group_unassigned"
 	OpsClientBusinessLimitedReasonLocalFeatureGate       = "local_feature_gate"
 	OpsClientBusinessLimitedReasonLocalPolicyDenied      = "local_policy_denied"
+
+	OpsSLAExclusionKey                              = "ops_sla_exclusion"
+	OpsSLAExclusionCategorySecurityAuditBlock       = "security_audit_block"
+	OpsSLAExclusionCategorySecurityAuditUnavailable = "security_audit_unavailable"
+	OpsSLAExclusionCategorySecurityAuditInvalid     = "security_audit_invalid"
+	OpsSLAExclusionCategorySecurityAudit            = "security_audit"
 )
 
 func MarkResponseCommitted(c *gin.Context) { c.Set(ResponseCommittedKey, true) }
@@ -91,6 +97,35 @@ func HasOpsClientBusinessLimited(c *gin.Context) bool {
 	}
 	marked, _ := v.(bool)
 	return marked
+}
+
+// OpsSLAExclusion marks an error that remains visible in ops_error_logs but is
+// excluded from SLA independently of business-limit classification.
+type OpsSLAExclusion struct {
+	Category string
+	Reason   string
+}
+
+func MarkOpsSLAExcluded(c *gin.Context, category, reason string) {
+	if c == nil {
+		return
+	}
+	c.Set(OpsSLAExclusionKey, OpsSLAExclusion{
+		Category: strings.TrimSpace(category),
+		Reason:   strings.TrimSpace(reason),
+	})
+}
+
+func GetOpsSLAExclusion(c *gin.Context) (OpsSLAExclusion, bool) {
+	if c == nil {
+		return OpsSLAExclusion{}, false
+	}
+	v, ok := c.Get(OpsSLAExclusionKey)
+	if !ok {
+		return OpsSLAExclusion{}, false
+	}
+	exclusion, ok := v.(OpsSLAExclusion)
+	return exclusion, ok
 }
 
 // OpsStreamError 描述网关在「响应状态已固化为 200」之后（keepalive ping 或部分数据

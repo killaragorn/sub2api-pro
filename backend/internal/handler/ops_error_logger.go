@@ -1072,6 +1072,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			CreatedAt: time.Now(),
 		}
 		applyOpsLatencyFieldsFromContext(c, entry)
+		applyOpsSLAExclusionFromContext(c, entry)
 		applyOpsUpstreamFieldsFromContext(c, entry)
 
 		if apiKey != nil {
@@ -1222,6 +1223,7 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 		CreatedAt: time.Now(),
 	}
 	applyOpsLatencyFieldsFromContext(c, entry)
+	applyOpsSLAExclusionFromContext(c, entry)
 
 	if apiKey != nil {
 		entry.APIKeyID = &apiKey.ID
@@ -1546,6 +1548,7 @@ func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status i
 	phase = classifyOpsPhase(errType, message, code)
 	routingCapacityLimited := isOpsRoutingCapacityLimited(c)
 	clientBusinessLimited := service.HasOpsClientBusinessLimited(c)
+	slaExclusion, slaExcluded := service.GetOpsSLAExclusion(c)
 	upstreamError := hasOpsUpstreamErrorContext(c)
 	accountAuthFailure := hasOpsAccountAuthFailure(c)
 	if accountAuthFailure && !routingCapacityLimited {
@@ -1559,6 +1562,15 @@ func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status i
 	if routingCapacityLimited {
 		phase = "routing"
 	}
+	if slaExcluded && !upstreamError && !routingCapacityLimited {
+		switch slaExclusion.Category {
+		case service.OpsSLAExclusionCategorySecurityAuditBlock:
+			phase = "request"
+		case service.OpsSLAExclusionCategorySecurityAuditUnavailable,
+			service.OpsSLAExclusionCategorySecurityAuditInvalid:
+			phase = "internal"
+		}
+	}
 	msg := strings.ToLower(message)
 	localClientAuthError := !upstreamError && phase == "auth" && isOpsClientAuthError(code, msg)
 	localBusinessLimited := !upstreamError && classifyOpsIsBusinessLimited(errType, phase, code, status, message, localClientAuthError)
@@ -1566,6 +1578,18 @@ func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status i
 	errorOwner = classifyOpsErrorOwner(phase, message)
 	errorSource = classifyOpsErrorSource(phase, message)
 	return phase, isBusinessLimited, errorOwner, errorSource
+}
+
+func applyOpsSLAExclusionFromContext(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
+	if c == nil || entry == nil || hasOpsUpstreamErrorContext(c) {
+		return
+	}
+	exclusion, ok := service.GetOpsSLAExclusion(c)
+	if !ok {
+		return
+	}
+	entry.IsSLAExcluded = true
+	entry.SLAExclusionReason = strings.TrimSpace(exclusion.Reason)
 }
 
 func classifyOpsIsBusinessLimited(errType, phase, code string, status int, message string, localClientAuthError ...bool) bool {

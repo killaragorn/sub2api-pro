@@ -24,6 +24,7 @@ function makeDetail(overrides: Partial<OpsErrorDetail>): OpsErrorDetail {
     error_body: '',
     user_agent: '',
     is_business_limited: false,
+    is_sla_excluded: false,
     ...overrides
   }
 }

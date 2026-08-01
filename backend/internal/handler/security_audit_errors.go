@@ -18,6 +18,7 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 	if decision == nil {
 		return
 	}
+	markSecurityAuditSLAExcluded(c, decision)
 	if isKeywordBlockDecision(decision) || securityAuditErrorCode(decision) == keywordSessionBlockedErrorCode {
 		h.writeOpenAIContentPolicyError(c, securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -52,6 +53,7 @@ func (h *GatewayHandler) openAISecurityAuditError(c *gin.Context, decision *secu
 	if decision == nil {
 		return
 	}
+	markSecurityAuditSLAExcluded(c, decision)
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.chatCompletionsErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -69,6 +71,7 @@ func (h *GatewayHandler) responsesSecurityAuditError(c *gin.Context, decision *s
 	if decision == nil {
 		return
 	}
+	markSecurityAuditSLAExcluded(c, decision)
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.responsesErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -82,6 +85,7 @@ func (h *GatewayHandler) anthropicSecurityAuditError(c *gin.Context, decision *s
 	if decision == nil {
 		return
 	}
+	markSecurityAuditSLAExcluded(c, decision)
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.errorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -99,6 +103,7 @@ func (h *OpenAIGatewayHandler) anthropicSecurityAuditError(c *gin.Context, decis
 	if decision == nil {
 		return
 	}
+	markSecurityAuditSLAExcluded(c, decision)
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.anthropicErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -116,6 +121,7 @@ func googleSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) 
 	if decision == nil {
 		return
 	}
+	markSecurityAuditSLAExcluded(c, decision)
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		googleError(c, securityAuditStatus(decision), securityAuditMessage(decision))
 		return
@@ -137,6 +143,26 @@ func googleSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) 
 			"metadata": gin.H{"request_id": requestID},
 		}},
 	}})
+}
+
+func markSecurityAuditSLAExcluded(c *gin.Context, decision *securityaudit.Decision) {
+	if decision == nil {
+		return
+	}
+	category := service.OpsSLAExclusionCategorySecurityAudit
+	if decision.Legacy != nil && decision.Legacy.Blocked {
+		category = service.OpsSLAExclusionCategorySecurityAuditBlock
+	} else {
+		switch decision.Kind {
+		case securityaudit.DecisionBlock:
+			category = service.OpsSLAExclusionCategorySecurityAuditBlock
+		case securityaudit.DecisionUnavailable:
+			category = service.OpsSLAExclusionCategorySecurityAuditUnavailable
+		case securityaudit.DecisionInvalid:
+			category = service.OpsSLAExclusionCategorySecurityAuditInvalid
+		}
+	}
+	service.MarkOpsSLAExcluded(c, category, securityAuditErrorCode(decision))
 }
 
 func writeSecurityAuditWSError(ctx context.Context, conn *coderws.Conn, decision *securityaudit.Decision) {

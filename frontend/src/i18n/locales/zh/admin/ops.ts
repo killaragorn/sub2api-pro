@@ -348,6 +348,7 @@ export default {
         account: '账号',
         latency: '请求时长',
         businessLimited: '业务限制',
+        slaExcluded: 'SLA 排除原因',
         requestPath: '请求路径',
         inboundEndpoint: '入站端点',
         upstreamEndpoint: '上游端点',

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -63,6 +64,14 @@ func requireArray(t *testing.T, value any) []any {
 	return array
 }
 
+func requireSecurityAuditSLAExclusion(t *testing.T, c *gin.Context, wantReason string) service.OpsSLAExclusion {
+	t.Helper()
+	exclusion, ok := service.GetOpsSLAExclusion(c)
+	require.True(t, ok)
+	require.Equal(t, wantReason, exclusion.Reason)
+	return exclusion
+}
+
 func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, kind := range []securityaudit.DecisionKind{securityaudit.DecisionBlock, securityaudit.DecisionUnavailable, securityaudit.DecisionInvalid} {
@@ -70,6 +79,7 @@ func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 		t.Run("openai_"+string(kind), func(t *testing.T) {
 			c, recorder := securityAuditErrorTestContext(t)
 			(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
+			requireSecurityAuditSLAExclusion(t, c, decision.ErrorCode)
 			require.Equal(t, decision.HTTPStatus, recorder.Code)
 			payload := decodeErrorJSON(t, recorder)
 			errorObject := requireObject(t, payload["error"])
@@ -86,6 +96,7 @@ func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 		t.Run("responses_"+string(kind), func(t *testing.T) {
 			c, recorder := securityAuditErrorTestContext(t)
 			(&GatewayHandler{}).responsesSecurityAuditError(c, decision)
+			requireSecurityAuditSLAExclusion(t, c, decision.ErrorCode)
 			require.Equal(t, decision.HTTPStatus, recorder.Code)
 			errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
 			require.Equal(t, decision.ErrorCode, errorObject["code"])
@@ -95,6 +106,7 @@ func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 		t.Run("claude_"+string(kind), func(t *testing.T) {
 			c, recorder := securityAuditErrorTestContext(t)
 			(&GatewayHandler{}).anthropicSecurityAuditError(c, decision)
+			requireSecurityAuditSLAExclusion(t, c, decision.ErrorCode)
 			require.Equal(t, decision.HTTPStatus, recorder.Code)
 			payload := decodeErrorJSON(t, recorder)
 			require.Equal(t, "error", payload["type"])
@@ -115,6 +127,7 @@ func TestPromptGuardGeminiErrorEnvelopeGolden(t *testing.T) {
 		decision := promptGuardDecision(kind)
 		c, recorder := securityAuditErrorTestContext(t)
 		googleSecurityAuditError(c, decision)
+		requireSecurityAuditSLAExclusion(t, c, decision.ErrorCode)
 		require.Equal(t, decision.HTTPStatus, recorder.Code)
 		payload := decodeErrorJSON(t, recorder)
 		errorObject := requireObject(t, payload["error"])
@@ -156,6 +169,7 @@ func TestKeywordModerationUsesCodexTerminalHTTPError(t *testing.T) {
 	c, recorder := securityAuditErrorTestContext(t)
 	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, legacy)
 
+	requireSecurityAuditSLAExclusion(t, c, "content_policy_violation")
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
 	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
@@ -169,6 +183,7 @@ func TestKeywordSessionBlockUsesCodexTerminalHTTPError(t *testing.T) {
 	c, recorder := securityAuditErrorTestContext(t)
 	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
 
+	requireSecurityAuditSLAExclusion(t, c, keywordSessionBlockedErrorCode)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Equal(t, coderws.StatusPolicyViolation, securityAuditWSCloseStatus(decision))
 	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
@@ -185,8 +200,34 @@ func TestLegacyModerationErrorKeepsExistingClientPriority(t *testing.T) {
 	}
 	c, recorder := securityAuditErrorTestContext(t)
 	(&GatewayHandler{}).openAISecurityAuditError(c, legacy)
+	requireSecurityAuditSLAExclusion(t, c, "content_policy_violation")
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "legacy exact message")
 	require.Contains(t, recorder.Body.String(), "content_policy_violation")
 	require.NotContains(t, recorder.Body.String(), securityaudit.ErrorCodeBlocked)
+}
+
+func TestAllHTTPSecurityAuditErrorWritersMarkSLAExclusion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	decision := promptGuardDecision(securityaudit.DecisionBlock)
+	writers := []struct {
+		name  string
+		write func(*gin.Context, *securityaudit.Decision)
+	}{
+		{name: "openai gateway openai", write: (&OpenAIGatewayHandler{}).openAISecurityAuditError},
+		{name: "gateway openai", write: (&GatewayHandler{}).openAISecurityAuditError},
+		{name: "gateway responses", write: (&GatewayHandler{}).responsesSecurityAuditError},
+		{name: "gateway anthropic", write: (&GatewayHandler{}).anthropicSecurityAuditError},
+		{name: "openai gateway anthropic", write: (&OpenAIGatewayHandler{}).anthropicSecurityAuditError},
+		{name: "google", write: googleSecurityAuditError},
+	}
+
+	for _, tt := range writers {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := securityAuditErrorTestContext(t)
+			tt.write(c, decision)
+			exclusion := requireSecurityAuditSLAExclusion(t, c, securityaudit.ErrorCodeBlocked)
+			require.Equal(t, service.OpsSLAExclusionCategorySecurityAuditBlock, exclusion.Category)
+		})
+	}
 }
