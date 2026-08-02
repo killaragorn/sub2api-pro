@@ -99,6 +99,33 @@ func TestOpsScheduledReportVariablesDoNotUsePreviewMetrics(t *testing.T) {
 	}
 }
 
+func TestOpsErrorDigestUsesSLAScopedErrorView(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 8, 0, 0, 0, time.UTC)
+	var captured *OpsErrorLogFilter
+	repo := &opsRepoMock{
+		ListErrorLogsFn: func(_ context.Context, filter *OpsErrorLogFilter) (*OpsErrorLogList, error) {
+			copy := *filter
+			captured = &copy
+			return &OpsErrorLogList{Errors: []*OpsErrorLog{}, Total: 0, Page: 1, PageSize: 100}, nil
+		},
+	}
+	svc := &OpsScheduledReportService{opsService: &OpsService{opsRepo: repo}}
+	report := &opsScheduledReport{
+		Name:       "Error digest",
+		ReportType: "error_digest",
+		TimeRange:  24 * time.Hour,
+	}
+
+	_, err := svc.generateReportContent(context.Background(), report, now)
+	require.NoError(t, err)
+	require.NotNil(t, captured)
+	require.Equal(t, "sla", captured.View)
+	require.NotNil(t, captured.StartTime)
+	require.NotNil(t, captured.EndTime)
+	require.Equal(t, now.Add(-24*time.Hour), captured.StartTime.UTC())
+	require.Equal(t, now, captured.EndTime.UTC())
+}
+
 func TestOpsScheduledReportLegacyTemplateReceivesSummaryHTML(t *testing.T) {
 	ctx := context.Background()
 	repo := newNotificationEmailMemorySettingRepo()

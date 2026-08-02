@@ -40,6 +40,17 @@ export function sumNumbers(values: Array<number | null | undefined>): number {
   }, 0)
 }
 
+// Operational error displays keep explicit SLA exclusions visible while the
+// separately rendered business-limit bucket remains outside the error count.
+export function opsDisplayedErrorCount(
+  errorCountTotal: number | null | undefined,
+  businessLimitedCount: number | null | undefined
+): number {
+  const total = typeof errorCountTotal === 'number' && Number.isFinite(errorCountTotal) ? errorCountTotal : 0
+  const business = typeof businessLimitedCount === 'number' && Number.isFinite(businessLimitedCount) ? businessLimitedCount : 0
+  return Math.max(total - business, 0)
+}
+
 /**
  * 解析 time_range 为分钟数。
  * 支持：`5m/30m/1h/6h/24h`

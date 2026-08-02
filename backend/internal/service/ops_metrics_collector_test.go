@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestOpsMetricsCollectorQueryErrorCountsExcludesCountTokens(t *testing.T) {
 	start := time.Date(2026, 5, 26, 10, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 
-	mock.ExpectQuery(`(?s)NOT is_business_limited AND NOT is_sla_excluded.*FROM ops_error_logs\s+WHERE created_at >= \$1 AND created_at < \$2\s+AND is_count_tokens = FALSE`).
+	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400 OR error_type = 'cyber_policy' OR COALESCE(is_business_limited, false) = true OR COALESCE(is_sla_excluded, false) = true), 0) AS error_total")+`.*NOT is_business_limited AND NOT is_sla_excluded.*FROM ops_error_logs\s+WHERE created_at >= \$1 AND created_at < \$2\s+AND is_count_tokens = FALSE`).
 		WithArgs(start, end).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"error_total",

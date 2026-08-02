@@ -107,7 +107,7 @@
         </template>
 
         <template #cell-status="{ row }">
-          <div class="flex items-center gap-1.5">
+          <div class="flex flex-wrap items-center gap-1.5">
             <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="getStatusClass(row.status_code)">
               {{ row.status_code }}
             </span>
@@ -119,6 +119,15 @@
               v-if="row.request_type != null && row.request_type > 0"
               class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-800 dark:bg-dark-700 dark:text-gray-200"
             >{{ formatRequestType(row.request_type) }}</span>
+            <span
+              v-if="row.is_sla_excluded"
+              class="inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200"
+              :title="row.sla_exclusion_reason || t('admin.ops.errorLog.slaExcludedBadge')"
+            >{{ t('admin.ops.errorLog.slaExcludedBadge') }}</span>
+            <span
+              v-if="row.is_business_limited"
+              class="inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-200"
+            >{{ t('admin.ops.errorLog.businessLimitedBadge') }}</span>
           </div>
         </template>
 

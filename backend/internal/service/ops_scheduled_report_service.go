@@ -601,6 +601,7 @@ func (s *OpsScheduledReportService) generateReportContent(ctx context.Context, r
 		filter := &OpsErrorLogFilter{
 			StartTime: &startTime,
 			EndTime:   &endTime,
+			View:      "sla",
 			Page:      1,
 			PageSize:  100,
 		}

@@ -270,6 +270,9 @@ SELECT
   COALESCE(e.upstream_model, ''),
   COALESCE(e.user_agent, ''),
   e.request_type,
+  COALESCE(e.is_business_limited, false),
+  COALESCE(e.is_sla_excluded, false),
+  COALESCE(e.sla_exclusion_reason, ''),
   COALESCE(ak.name, ''),
   ak.deleted_at
 FROM ops_error_logs e
@@ -340,6 +343,9 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 			&item.UpstreamModel,
 			&item.UserAgent,
 			&requestType,
+			&item.IsBusinessLimited,
+			&item.IsSLAExcluded,
+			&item.SLAExclusionReason,
 			&apiKeyName,
 			&apiKeyDeletedAt,
 		); err != nil {
@@ -893,6 +899,21 @@ INSERT INTO ops_system_log_cleanup_audits (
 
 var likePatternReplacer = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
+// opsOperationalErrorPredicate keeps client-visible failures separate from
+// recovered provider-health rows. Explicit business/SLA markers cover in-band
+// SSE failures whose HTTP status was already committed as 200. cyber_policy is
+// retained for legacy rows created before the independent SLA marker existed.
+func opsOperationalErrorPredicate(alias string) string {
+	prefix := ""
+	if alias = strings.TrimSpace(alias); alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(
+		"(COALESCE(%[1]sstatus_code, 0) >= 400 OR %[1]serror_type = 'cyber_policy' OR COALESCE(%[1]sis_business_limited, false) = true OR COALESCE(%[1]sis_sla_excluded, false) = true)",
+		prefix,
+	)
+}
+
 // escapeLikePattern 转义 LIKE/ILIKE 通配符（\ % _），避免用户输入被当作通配符。
 // Postgres 默认以反斜杠为转义符，无需额外 ESCAPE 子句。
 func escapeLikePattern(s string) string {
@@ -908,8 +929,9 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	if filter != nil {
 		phaseFilter = strings.TrimSpace(strings.ToLower(filter.Phase))
 	}
-	// ops_error_logs stores client-visible error requests (status>=400),
-	// but we also persist "recovered" upstream errors (status<400) for upstream health visibility.
+	// ops_error_logs stores client-visible error requests (normally status>=400,
+	// with explicit markers for in-band SSE failures), but we also persist
+	// "recovered" upstream errors (status<400) for upstream health visibility.
 	// If Resolved is not specified, do not filter by resolved state (backward-compatible).
 	resolvedFilter := (*bool)(nil)
 	if filter != nil {
@@ -918,12 +940,11 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	// Keep list endpoints scoped to client errors unless the caller explicitly opts
 	// into recovered provider-health rows (upstream/account_auth). Request-error
 	// endpoints never set the opt-in and retain this guard.
-	// cyber_policy is exempt from the status >= 400 guard: streaming cyber hits arrive with
-	// status 200 (the SSE stream opened successfully before upstream returned response.failed),
-	// but they are always client-visible blocked requests that belong in admin + user error
-	// lists.  Without the exemption the entire streaming-path cyber sink would be invisible.
+	// In-band SSE failures can arrive with wire status 200. Explicit business/SLA
+	// markers keep those client-visible failures in admin + user error lists while
+	// recovered provider-health rows remain behind the opt-in.
 	if !opsFilterIncludesRecoveredProviderRows(filter, phaseFilter) {
-		clauses = append(clauses, "(COALESCE(e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy')")
+		clauses = append(clauses, opsOperationalErrorPredicate("e"))
 	}
 
 	if filter.StartTime != nil && !filter.StartTime.IsZero() {
@@ -982,6 +1003,8 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 		clauses = append(clauses, "(COALESCE(e.is_business_limited,false) = true OR COALESCE(e.is_sla_excluded,false) = true)")
 	case "all":
 		// no-op
+	case "sla":
+		clauses = append(clauses, "COALESCE(e.status_code, 0) >= 400 AND COALESCE(e.is_business_limited,false) = false AND COALESCE(e.is_sla_excluded,false) = false")
 	default:
 		// treat unknown as default 'errors'
 		clauses = append(clauses, "COALESCE(e.is_business_limited,false) = false")

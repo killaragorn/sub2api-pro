@@ -53,6 +53,17 @@ func TestBuildOpsErrorLogsWhere_KeepsExplicitSLAExclusionsVisible(t *testing.T) 
 	if !strings.Contains(excludedWhere, "COALESCE(e.is_business_limited,false) = true OR COALESCE(e.is_sla_excluded,false) = true") {
 		t.Fatalf("excluded view must remain an SLA-excluded subset: %s", excludedWhere)
 	}
+
+	slaWhere, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "sla"})
+	for _, want := range []string{
+		"COALESCE(e.status_code, 0) >= 400",
+		"COALESCE(e.is_business_limited,false) = false",
+		"COALESCE(e.is_sla_excluded,false) = false",
+	} {
+		if !strings.Contains(slaWhere, want) {
+			t.Fatalf("SLA view must match SLA/email error scope; missing %q in %s", want, slaWhere)
+		}
+	}
 }
 
 func TestBuildOpsErrorLogsWhere_ModelFuzzy(t *testing.T) {
@@ -100,6 +111,12 @@ func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
 	}
 	if !strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
 		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
+	}
+	if !strings.Contains(where, "COALESCE(e.is_business_limited, false) = true") {
+		t.Fatalf("default filter must retain in-band business-limited failures with wire status 200\nfull: %s", where)
+	}
+	if !strings.Contains(where, "COALESCE(e.is_sla_excluded, false) = true") {
+		t.Fatalf("default filter must retain explicit SLA exclusions with wire status 200\nfull: %s", where)
 	}
 
 	// phase=upstream WITHOUT the recovered-upstream opt-in keeps the status guard:

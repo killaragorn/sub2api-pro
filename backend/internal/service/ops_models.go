@@ -71,6 +71,12 @@ type OpsErrorLog struct {
 	RequestType      *int16 `json:"request_type"`
 	UserAgent        string `json:"user_agent"`
 
+	// vNext metric semantics. These fields are present on list rows as well as
+	// details so operators can distinguish visible errors from SLA scope.
+	IsBusinessLimited  bool   `json:"is_business_limited"`
+	IsSLAExcluded      bool   `json:"is_sla_excluded"`
+	SLAExclusionReason string `json:"sla_exclusion_reason,omitempty"`
+
 	// 关联 api_key 名称（LEFT JOIN api_keys 取得；软删只覆盖 key 列，name 保留，故已删 key 仍有原名）。
 	APIKeyName    string `json:"api_key_name,omitempty"`
 	APIKeyDeleted bool   `json:"api_key_deleted,omitempty"`
@@ -93,11 +99,6 @@ type OpsErrorLogDetail struct {
 	UpstreamLatencyMs  *int64 `json:"upstream_latency_ms"`
 	ResponseLatencyMs  *int64 `json:"response_latency_ms"`
 	TimeToFirstTokenMs *int64 `json:"time_to_first_token_ms"`
-
-	// vNext metric semantics
-	IsBusinessLimited  bool   `json:"is_business_limited"`
-	IsSLAExcluded      bool   `json:"is_sla_excluded"`
-	SLAExclusionReason string `json:"sla_exclusion_reason,omitempty"`
 
 	// Bound (non-deleted) key prefix, snapshotted at error time.
 	APIKeyPrefix string `json:"api_key_prefix,omitempty"`
@@ -156,6 +157,7 @@ type OpsErrorLogFilter struct {
 	// - errors: show operational errors; explicit SLA exclusions remain visible
 	// - excluded: show the SLA-excluded subset (business-limited or explicit)
 	// - all: show everything
+	// - sla: internal view containing only errors counted by SLA/email reporting
 	View string
 
 	Page     int

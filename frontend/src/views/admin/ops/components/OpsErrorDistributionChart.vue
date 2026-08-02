@@ -5,6 +5,7 @@ import { Chart as ChartJS, ArcElement, Legend, Tooltip } from 'chart.js'
 import { Doughnut } from 'vue-chartjs'
 import type { OpsErrorDistributionResponse } from '@/api/admin/ops'
 import type { ChartState } from '../types'
+import { opsDisplayedErrorCount } from '../utils/opsFormatters'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 
@@ -30,11 +31,14 @@ const colors = computed(() => ({
   text: isDarkMode.value ? '#9ca3af' : '#6b7280'
 }))
 
-const totalSlaErrors = computed(() =>
-  (props.data?.items ?? []).reduce((total, item) => total + Number(item.sla || 0), 0)
+const totalOperationalErrors = computed(() =>
+  (props.data?.items ?? []).reduce(
+    (total, item) => total + opsDisplayedErrorCount(item.total, item.business_limited),
+    0
+  )
 )
 
-const hasData = computed(() => totalSlaErrors.value > 0)
+const hasData = computed(() => totalOperationalErrors.value > 0)
 
 const state = computed<ChartState>(() => {
   if (hasData.value) return 'ready'
@@ -58,7 +62,7 @@ const categories = computed<ErrorCategory[]>(() => {
 
   for (const item of props.data.items || []) {
     const code = Number(item.status_code || 0)
-    const count = Number(item.sla || 0)
+    const count = opsDisplayedErrorCount(item.total, item.business_limited)
     if (!Number.isFinite(code) || !Number.isFinite(count)) continue
 
     if ([502, 503, 504].includes(code)) upstream += count

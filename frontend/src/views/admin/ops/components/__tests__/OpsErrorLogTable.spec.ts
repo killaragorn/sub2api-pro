@@ -73,6 +73,18 @@ describe('OpsErrorLogTable user/api-key/account columns', () => {
     expect(wrapper.text()).toContain('old-key')
     expect(wrapper.text()).toContain('admin.ops.errorLog.keyDeletedBadge')
   })
+
+  it('shows SLA exclusion and business-limit badges on list rows', () => {
+    const wrapper = mountTable({
+      is_sla_excluded: true,
+      sla_exclusion_reason: 'prompt_guard_blocked',
+      is_business_limited: true,
+    })
+
+    expect(wrapper.text()).toContain('admin.ops.errorLog.slaExcludedBadge')
+    expect(wrapper.text()).toContain('admin.ops.errorLog.businessLimitedBadge')
+    expect(wrapper.find('[title="prompt_guard_blocked"]').exists()).toBe(true)
+  })
 })
 
 // 防回归:组件用 admin.ops.errorLog.* 命名空间。若 i18n 键写错命名空间(如误放到
@@ -84,10 +96,12 @@ describe('OpsErrorLogTable user/api-key/account columns', () => {
 describe('OpsErrorLogTable i18n keys exist in the errorLog namespace', () => {
   const locales: Record<string, any> = { zh: zhLocale, en: enLocale }
   for (const [name, msgs] of Object.entries(locales)) {
-    it(`has apiKey & keyDeletedBadge for ${name}`, () => {
+    it(`has list badge keys for ${name}`, () => {
       const errorLog = msgs?.admin?.ops?.errorLog
       expect(errorLog?.apiKey).toBeTruthy()
       expect(errorLog?.keyDeletedBadge).toBeTruthy()
+      expect(errorLog?.slaExcludedBadge).toBeTruthy()
+      expect(errorLog?.businessLimitedBadge).toBeTruthy()
     })
   }
 })

@@ -935,6 +935,9 @@ export interface OpsErrorLog {
   request_type?: number | null
   user_agent?: string
 
+  is_business_limited: boolean
+  is_sla_excluded: boolean
+  sla_exclusion_reason?: string
 }
 
 export interface OpsErrorDetail extends OpsErrorLog {
@@ -951,10 +954,6 @@ export interface OpsErrorDetail extends OpsErrorLog {
   upstream_latency_ms?: number | null
   response_latency_ms?: number | null
   time_to_first_token_ms?: number | null
-
-  is_business_limited: boolean
-  is_sla_excluded: boolean
-  sla_exclusion_reason?: string
 
   // Bound (non-deleted) key prefix, snapshotted at error time
   api_key_prefix?: string | null

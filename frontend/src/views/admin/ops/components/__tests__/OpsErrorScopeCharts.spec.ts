@@ -42,6 +42,8 @@ vi.mock('vue-chartjs', async () => {
 
 vi.mock('../../utils/opsFormatters', () => ({
   formatHistoryLabel: (date: string | undefined) => date ?? '',
+  opsDisplayedErrorCount: (total: number | null | undefined, business: number | null | undefined) =>
+    Math.max((total ?? 0) - (business ?? 0), 0),
   sumNumbers: (values: Array<number | null | undefined>) =>
     values.reduce<number>((total, value) => total + (typeof value === 'number' && Number.isFinite(value) ? value : 0), 0),
 }))
@@ -81,8 +83,8 @@ const globalStubs = {
   },
 }
 
-describe('Ops SLA-scoped error charts', () => {
-  it('错误分布图按 SLA 错误数统计，不把业务限制错误算进请求错误分布', () => {
+describe('Ops operational error charts', () => {
+  it('错误分布图使用运营错误数，不把业务限制错误算进请求错误分布', () => {
     const wrapper = mount(OpsErrorDistributionChart, {
       props: {
         loading: false,
@@ -121,7 +123,27 @@ describe('Ops SLA-scoped error charts', () => {
     expect(wrapper.find('.empty-state-stub').exists()).toBe(true)
   })
 
-  it('错误趋势图的请求错误详情按钮只按 SLA 错误启用', () => {
+  it('错误分布图保留显式 SLA 排除项', () => {
+    const wrapper = mount(OpsErrorDistributionChart, {
+      props: {
+        loading: false,
+        data: {
+          total: 3,
+          items: [{ status_code: 200, total: 3, sla: 0, business_limited: 0 }],
+        },
+      },
+      global: globalStubs,
+    })
+
+    const doughnut = wrapper.findComponent({ name: 'Doughnut' })
+    expect(doughnut.exists()).toBe(true)
+    expect(doughnut.props('data')).toMatchObject({
+      labels: ['admin.ops.other'],
+      datasets: [{ data: [3] }],
+    })
+  })
+
+  it('错误趋势图在只有业务限制错误时禁用请求错误详情', () => {
     const wrapper = mount(OpsErrorTrendChart, {
       props: {
         loading: false,
@@ -143,5 +165,34 @@ describe('Ops SLA-scoped error charts', () => {
 
     const requestErrorsButton = wrapper.findAll('button')[0]
     expect(requestErrorsButton.attributes('disabled')).toBeDefined()
+  })
+
+  it('错误趋势图使用运营错误数启用详情，即使这些错误不计入 SLA', () => {
+    const wrapper = mount(OpsErrorTrendChart, {
+      props: {
+        loading: false,
+        timeRange: '1h',
+        points: [
+          {
+            bucket_start: '2026-08-02T00:00:00Z',
+            error_count_total: 5,
+            business_limited_count: 0,
+            error_count_sla: 0,
+            upstream_error_count_excl_429_529: 0,
+            upstream_429_count: 0,
+            upstream_529_count: 0,
+          },
+        ],
+      },
+      global: globalStubs,
+    })
+
+    const requestErrorsButton = wrapper.findAll('button')[0]
+    expect(requestErrorsButton.attributes('disabled')).toBeUndefined()
+    const line = wrapper.findComponent({ name: 'LineChartStub' })
+    expect(line.props('data').datasets[0]).toMatchObject({
+      label: 'admin.ops.requestErrors',
+      data: [5],
+    })
   })
 })

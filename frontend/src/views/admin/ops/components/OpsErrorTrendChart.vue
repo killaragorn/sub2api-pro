@@ -15,7 +15,7 @@ import {
 import { Line } from 'vue-chartjs'
 import type { OpsErrorTrendPoint } from '@/api/admin/ops'
 import type { ChartState } from '../types'
-import { formatHistoryLabel, sumNumbers } from '../utils/opsFormatters'
+import { formatHistoryLabel, opsDisplayedErrorCount, sumNumbers } from '../utils/opsFormatters'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 
@@ -45,7 +45,11 @@ const colors = computed(() => ({
   text: isDarkMode.value ? '#9ca3af' : '#6b7280'
 }))
 
-const totalRequestErrors = computed(() => sumNumbers(props.points.map((p) => p.error_count_sla ?? 0)))
+const requestErrorCounts = computed(() =>
+  props.points.map((p) => opsDisplayedErrorCount(p.error_count_total, p.business_limited_count))
+)
+
+const totalRequestErrors = computed(() => sumNumbers(requestErrorCounts.value))
 
 const totalUpstreamErrors = computed(() =>
   sumNumbers(
@@ -54,7 +58,7 @@ const totalUpstreamErrors = computed(() =>
 )
 
 const totalDisplayed = computed(() =>
-  sumNumbers(props.points.map((p) => (p.error_count_sla ?? 0) + (p.upstream_error_count_excl_429_529 ?? 0) + (p.business_limited_count ?? 0)))
+  totalRequestErrors.value + totalUpstreamErrors.value + sumNumbers(props.points.map((p) => p.business_limited_count ?? 0))
 )
 
 const hasRequestErrors = computed(() => totalRequestErrors.value > 0)
@@ -66,8 +70,8 @@ const chartData = computed(() => {
     labels: props.points.map((p) => formatHistoryLabel(p.bucket_start, props.timeRange)),
     datasets: [
       {
-        label: t('admin.ops.errorsSla'),
-        data: props.points.map((p) => p.error_count_sla ?? 0),
+        label: t('admin.ops.requestErrors'),
+        data: requestErrorCounts.value,
         borderColor: colors.value.red,
         backgroundColor: colors.value.redAlpha,
         fill: true,
