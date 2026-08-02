@@ -381,3 +381,47 @@ type AccountUsageStatsResponse struct {
 	Endpoints         []EndpointStat        `json:"endpoints"`
 	UpstreamEndpoints []EndpointStat        `json:"upstream_endpoints"`
 }
+
+const (
+	AccountUsageGranularityDay  = "day"
+	AccountUsageGranularityWeek = "week"
+)
+
+func IsValidAccountUsageGranularity(granularity string) bool {
+	return granularity == AccountUsageGranularityDay || granularity == AccountUsageGranularityWeek
+}
+
+// AccountUsagePeriod represents one calendar day or Monday-to-Sunday week.
+type AccountUsagePeriod struct {
+	PeriodStart  string  `json:"period_start"`
+	PeriodEnd    string  `json:"period_end"`
+	Requests     int64   `json:"requests"`
+	Tokens       int64   `json:"tokens"`
+	StandardCost float64 `json:"standard_cost"`
+	AccountCost  float64 `json:"account_cost"`
+	UserCost     float64 `json:"user_cost"`
+}
+
+// AccountUsageHistorySummary contains totals across the account's entire usage history.
+type AccountUsageHistorySummary struct {
+	TotalPeriods      int64   `json:"total_periods"`
+	TotalRequests     int64   `json:"total_requests"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalStandardCost float64 `json:"total_standard_cost"`
+	TotalAccountCost  float64 `json:"total_account_cost"`
+	TotalUserCost     float64 `json:"total_user_cost"`
+	FirstPeriodStart  string  `json:"first_period_start"`
+	LastPeriodEnd     string  `json:"last_period_end"`
+}
+
+// AccountUsageHistoryResponse is a paginated account history grouped by calendar period.
+type AccountUsageHistoryResponse struct {
+	Items       []AccountUsagePeriod       `json:"items"`
+	Summary     AccountUsageHistorySummary `json:"summary"`
+	Total       int64                      `json:"total"`
+	Page        int                        `json:"page"`
+	PageSize    int                        `json:"page_size"`
+	Pages       int                        `json:"pages"`
+	Granularity string                     `json:"granularity"`
+	Timezone    string                     `json:"timezone"`
+}

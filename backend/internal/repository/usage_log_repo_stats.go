@@ -1143,3 +1143,181 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 	}
 	return resp, nil
 }
+
+// GetAccountUsageHistory returns the account's complete usage history grouped by
+// calendar day or ISO week. Period boundaries are calculated in timezoneName.
+func (r *usageLogRepository) GetAccountUsageHistory(ctx context.Context, accountID int64, granularity, timezoneName string, page, pageSize int) (resp *usagestats.AccountUsageHistoryResponse, err error) {
+	if !usagestats.IsValidAccountUsageGranularity(granularity) {
+		granularity = usagestats.AccountUsageGranularityDay
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	timezoneName = normalizeUsageHistoryTimezone(timezoneName)
+
+	query := `
+		WITH grouped AS (
+			SELECT
+				CASE
+					WHEN $2 = 'week' THEN DATE_TRUNC('week', created_at AT TIME ZONE $3)::date
+					ELSE DATE_TRUNC('day', created_at AT TIME ZONE $3)::date
+				END AS period_start,
+				COUNT(*) AS requests,
+				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS tokens,
+				COALESCE(SUM(total_cost), 0) AS standard_cost,
+				COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) AS account_cost,
+				COALESCE(SUM(actual_cost), 0) AS user_cost
+			FROM usage_logs
+			WHERE account_id = $1
+			GROUP BY 1
+		),
+		summary AS (
+			SELECT
+				COUNT(*) AS total_periods,
+				COALESCE(SUM(requests), 0) AS total_requests,
+				COALESCE(SUM(tokens), 0) AS total_tokens,
+				COALESCE(SUM(standard_cost), 0) AS total_standard_cost,
+				COALESCE(SUM(account_cost), 0) AS total_account_cost,
+				COALESCE(SUM(user_cost), 0) AS total_user_cost,
+				MIN(period_start) AS first_period_start,
+				MAX(period_start) AS last_period_start
+			FROM grouped
+		),
+		paged AS (
+			SELECT *
+			FROM grouped
+			ORDER BY period_start DESC
+			LIMIT $4 OFFSET $5
+		)
+		SELECT
+			p.period_start,
+			CASE
+				WHEN p.period_start IS NULL THEN NULL
+				WHEN $2 = 'week' THEN p.period_start + 6
+				ELSE p.period_start
+			END AS period_end,
+			p.requests,
+			p.tokens,
+			p.standard_cost,
+			p.account_cost,
+			p.user_cost,
+			s.total_periods,
+			s.total_requests,
+			s.total_tokens,
+			s.total_standard_cost,
+			s.total_account_cost,
+			s.total_user_cost,
+			s.first_period_start,
+			s.last_period_start
+		FROM summary s
+		LEFT JOIN paged p ON TRUE
+		ORDER BY p.period_start DESC NULLS LAST
+	`
+
+	offset := int64(page-1) * int64(pageSize)
+	rows, err := r.sql.QueryContext(ctx, query, accountID, granularity, timezoneName, pageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+			resp = nil
+		}
+	}()
+
+	resp = &usagestats.AccountUsageHistoryResponse{
+		Items:       make([]usagestats.AccountUsagePeriod, 0),
+		Page:        page,
+		PageSize:    pageSize,
+		Granularity: granularity,
+		Timezone:    timezoneName,
+	}
+
+	for rows.Next() {
+		var (
+			periodStart      sql.NullTime
+			periodEnd        sql.NullTime
+			requests         sql.NullInt64
+			tokens           sql.NullInt64
+			standardCost     sql.NullFloat64
+			accountCost      sql.NullFloat64
+			userCost         sql.NullFloat64
+			firstPeriodStart sql.NullTime
+			lastPeriodStart  sql.NullTime
+		)
+		if err = rows.Scan(
+			&periodStart,
+			&periodEnd,
+			&requests,
+			&tokens,
+			&standardCost,
+			&accountCost,
+			&userCost,
+			&resp.Summary.TotalPeriods,
+			&resp.Summary.TotalRequests,
+			&resp.Summary.TotalTokens,
+			&resp.Summary.TotalStandardCost,
+			&resp.Summary.TotalAccountCost,
+			&resp.Summary.TotalUserCost,
+			&firstPeriodStart,
+			&lastPeriodStart,
+		); err != nil {
+			return nil, err
+		}
+
+		if firstPeriodStart.Valid {
+			resp.Summary.FirstPeriodStart = firstPeriodStart.Time.Format("2006-01-02")
+		}
+		if lastPeriodStart.Valid {
+			lastPeriodEnd := lastPeriodStart.Time
+			if granularity == usagestats.AccountUsageGranularityWeek {
+				lastPeriodEnd = lastPeriodEnd.AddDate(0, 0, 6)
+			}
+			resp.Summary.LastPeriodEnd = lastPeriodEnd.Format("2006-01-02")
+		}
+
+		if !periodStart.Valid {
+			continue
+		}
+		resp.Items = append(resp.Items, usagestats.AccountUsagePeriod{
+			PeriodStart:  periodStart.Time.Format("2006-01-02"),
+			PeriodEnd:    periodEnd.Time.Format("2006-01-02"),
+			Requests:     requests.Int64,
+			Tokens:       tokens.Int64,
+			StandardCost: standardCost.Float64,
+			AccountCost:  accountCost.Float64,
+			UserCost:     userCost.Float64,
+		})
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	resp.Total = resp.Summary.TotalPeriods
+	resp.Pages = int((resp.Total + int64(pageSize) - 1) / int64(pageSize))
+	if resp.Pages < 1 {
+		resp.Pages = 1
+	}
+	return resp, nil
+}
+
+func normalizeUsageHistoryTimezone(timezoneName string) string {
+	if timezoneName = strings.TrimSpace(timezoneName); timezoneName != "" && timezoneName != "Local" {
+		if _, err := time.LoadLocation(timezoneName); err == nil {
+			return timezoneName
+		}
+	}
+
+	fallback := resolveUsageStatsTimezone()
+	if _, err := time.LoadLocation(fallback); err == nil {
+		return fallback
+	}
+	return "UTC"
+}

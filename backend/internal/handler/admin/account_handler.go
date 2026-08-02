@@ -26,6 +26,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -1492,6 +1493,75 @@ func (h *AccountHandler) GetStats(c *gin.Context) {
 	}
 
 	response.Success(c, stats)
+}
+
+// GetUsageHistory handles getting the account's complete usage history.
+// GET /api/v1/admin/accounts/:id/usage-history
+func (h *AccountHandler) GetUsageHistory(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	granularity := strings.ToLower(strings.TrimSpace(c.DefaultQuery("granularity", usagestats.AccountUsageGranularityDay)))
+	if !usagestats.IsValidAccountUsageGranularity(granularity) {
+		response.BadRequest(c, "Invalid granularity; expected day or week")
+		return
+	}
+
+	page, err := parseAccountUsageHistoryInt(c.Query("page"), 1, 1_000_000_000)
+	if err != nil {
+		response.BadRequest(c, "Invalid page")
+		return
+	}
+	pageSize, err := parseAccountUsageHistoryInt(c.Query("page_size"), 50, 100)
+	if err != nil {
+		response.BadRequest(c, "Invalid page_size; expected a value between 1 and 100")
+		return
+	}
+
+	timezoneName := strings.TrimSpace(c.Query("timezone"))
+	if timezoneName == "" {
+		timezoneName = timezone.Name()
+		if timezoneName == "" || timezoneName == "Local" {
+			timezoneName = "UTC"
+		}
+	}
+	if timezoneName == "Local" {
+		response.BadRequest(c, "Invalid timezone")
+		return
+	}
+	if _, err := time.LoadLocation(timezoneName); err != nil {
+		response.BadRequest(c, "Invalid timezone")
+		return
+	}
+
+	history, err := h.accountUsageService.GetAccountUsageHistory(
+		c.Request.Context(),
+		accountID,
+		granularity,
+		timezoneName,
+		page,
+		pageSize,
+	)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, history)
+}
+
+func parseAccountUsageHistoryInt(raw string, defaultValue, maxValue int) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 || (maxValue > 0 && value > maxValue) {
+		return 0, fmt.Errorf("invalid positive integer")
+	}
+	return value, nil
 }
 
 // ClearError handles clearing account error

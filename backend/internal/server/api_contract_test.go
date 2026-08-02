@@ -2735,6 +2735,10 @@ func (r *stubUsageLogRepo) GetAccountUsageStats(ctx context.Context, accountID i
 	return nil, errors.New("not implemented")
 }
 
+func (r *stubUsageLogRepo) GetAccountUsageHistory(ctx context.Context, accountID int64, granularity, timezoneName string, page, pageSize int) (*usagestats.AccountUsageHistoryResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (r *stubUsageLogRepo) GetStatsWithFilters(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, error) {
 	logs, _, err := r.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 100000}, filters)
 	if err != nil {

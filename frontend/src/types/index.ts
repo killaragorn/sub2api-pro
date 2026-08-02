@@ -2073,6 +2073,35 @@ export interface AccountUsageStatsResponse {
   upstream_endpoints: EndpointStat[]
 }
 
+export type AccountUsageHistoryGranularity = 'day' | 'week'
+
+export interface AccountUsageHistoryPeriod {
+  period_start: string
+  period_end: string
+  requests: number
+  tokens: number
+  standard_cost: number
+  account_cost: number
+  user_cost: number
+}
+
+export interface AccountUsageHistorySummary {
+  total_periods: number
+  total_requests: number
+  total_tokens: number
+  total_standard_cost: number
+  total_account_cost: number
+  total_user_cost: number
+  first_period_start: string
+  last_period_end: string
+}
+
+export interface AccountUsageHistoryResponse extends BasePaginationResponse<AccountUsageHistoryPeriod> {
+  summary: AccountUsageHistorySummary
+  granularity: AccountUsageHistoryGranularity
+  timezone: string
+}
+
 // ==================== User Attribute Types ====================
 
 export type UserAttributeType = 'text' | 'textarea' | 'number' | 'email' | 'url' | 'date' | 'select' | 'multi_select'

@@ -71,6 +71,7 @@ type UsageLogRepository interface {
 
 	// Account stats
 	GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error)
+	GetAccountUsageHistory(ctx context.Context, accountID int64, granularity, timezoneName string, page, pageSize int) (*usagestats.AccountUsageHistoryResponse, error)
 
 	// Aggregated stats (optimized)
 	GetUserStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) (*usagestats.UsageStats, error)
@@ -1436,6 +1437,14 @@ func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountI
 		return nil, fmt.Errorf("get account usage stats failed: %w", err)
 	}
 	return stats, nil
+}
+
+func (s *AccountUsageService) GetAccountUsageHistory(ctx context.Context, accountID int64, granularity, timezoneName string, page, pageSize int) (*usagestats.AccountUsageHistoryResponse, error) {
+	history, err := s.usageLogRepo.GetAccountUsageHistory(ctx, accountID, granularity, timezoneName, page, pageSize)
+	if err != nil {
+		return nil, fmt.Errorf("get account usage history failed: %w", err)
+	}
+	return history, nil
 }
 
 // fetchOAuthUsageRaw 从 Anthropic API 获取原始响应（不构建 UsageInfo）

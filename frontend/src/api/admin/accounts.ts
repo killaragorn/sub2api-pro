@@ -13,6 +13,8 @@ import type {
   WindowStats,
   ClaudeModel,
   AccountUsageStatsResponse,
+  AccountUsageHistoryGranularity,
+  AccountUsageHistoryResponse,
   TempUnschedulableStatus,
   AdminDataPayload,
   AdminDataImportResult,
@@ -289,6 +291,22 @@ export async function getStats(id: number, days: number = 30): Promise<AccountUs
   const { data } = await apiClient.get<AccountUsageStatsResponse>(`/admin/accounts/${id}/stats`, {
     params: { days }
   })
+  return data
+}
+
+/** Get the account's complete usage history grouped by calendar day or week. */
+export async function getUsageHistory(
+  id: number,
+  params: {
+    granularity: AccountUsageHistoryGranularity
+    page: number
+    page_size: number
+  }
+): Promise<AccountUsageHistoryResponse> {
+  const { data } = await apiClient.get<AccountUsageHistoryResponse>(
+    `/admin/accounts/${id}/usage-history`,
+    { params }
+  )
   return data
 }
 
@@ -954,6 +972,7 @@ export const accountsAPI = {
   refreshCredentials,
   applyOAuthCredentials,
   getStats,
+  getUsageHistory,
   clearError,
   getUsage,
   getTodayStats,

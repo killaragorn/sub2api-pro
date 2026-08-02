@@ -435,10 +435,20 @@
     </div>
 
     <template #footer>
-      <div class="flex justify-end">
+      <div class="flex w-full flex-wrap items-center justify-between gap-3">
+        <button
+          v-if="account"
+          type="button"
+          data-testid="view-account-usage-history"
+          class="inline-flex items-center gap-2 rounded-lg bg-primary-50 px-4 py-2 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-300 dark:hover:bg-primary-900/30"
+          @click="openUsageHistory"
+        >
+          <Icon name="externalLink" size="sm" />
+          {{ t('admin.accounts.history.viewAll') }}
+        </button>
         <button
           @click="handleClose"
-          class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-300 dark:hover:bg-dark-500"
+          class="ml-auto rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-300 dark:hover:bg-dark-500"
         >
           {{ t('common.close') }}
         </button>
@@ -450,6 +460,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -482,6 +493,7 @@ ChartJS.register(
 )
 
 const { t } = useI18n()
+const router = useRouter()
 
 const props = defineProps<{
   show: boolean
@@ -670,6 +682,15 @@ const loadStats = async () => {
 
 const handleClose = () => {
   emit('close')
+}
+
+const openUsageHistory = () => {
+  if (!props.account) return
+  const href = router.resolve({
+    name: 'AdminAccountUsageHistory',
+    params: { id: props.account.id }
+  }).href
+  window.open(href, '_blank', 'noopener,noreferrer')
 }
 
 // Format helpers
