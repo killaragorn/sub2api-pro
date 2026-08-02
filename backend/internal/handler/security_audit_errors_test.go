@@ -191,6 +191,111 @@ func TestKeywordSessionBlockUsesCodexTerminalHTTPError(t *testing.T) {
 	require.Equal(t, keywordSessionBlockedClientMsg, errorObject["message"])
 }
 
+func TestKeywordContentPolicyUsesCodexTerminalSSEError(t *testing.T) {
+	cases := []struct {
+		name         string
+		decision     *securityaudit.Decision
+		internalCode string
+		message      string
+	}{
+		{
+			name: "first keyword block",
+			decision: &securityaudit.Decision{
+				Kind: securityaudit.DecisionBlock, HTTPStatus: http.StatusForbidden,
+				ErrorCode: "content_policy_violation", ClientMessage: "keyword blocked",
+				Legacy: &securityaudit.LegacyDecision{
+					Blocked: true, StatusCode: http.StatusForbidden, ErrorCode: "content_policy_violation",
+					Message: "keyword blocked", Action: service.ContentModerationActionKeywordBlock,
+				},
+			},
+			internalCode: "content_policy_violation",
+			message:      "keyword blocked",
+		},
+		{
+			name:         "historical session block",
+			decision:     keywordSessionBlockedDecision(),
+			internalCode: keywordSessionBlockedErrorCode,
+			message:      keywordSessionBlockedClientMsg,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, recorder := securityAuditErrorTestContext(t)
+			c.Request.URL.Path = EndpointResponses
+			setOpsRequestContext(c, "gpt-5", true)
+
+			(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, tc.decision)
+
+			requireSecurityAuditSLAExclusion(t, c, tc.internalCode)
+			require.Equal(t, http.StatusOK, recorder.Code)
+			require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+			response, errorObject := parseResponsesFailedSSE(t, recorder.Body.String())
+			require.Equal(t, "gpt-5", response["model"])
+			require.Equal(t, "invalid_request_error", errorObject["type"])
+			require.Equal(t, "invalid_prompt", errorObject["code"])
+			require.Equal(t, tc.message, errorObject["message"])
+		})
+	}
+}
+
+func TestKeywordContentPolicyBodySignalCompactUsesCodexTerminalSSEError(t *testing.T) {
+	c, recorder := securityAuditErrorTestContext(t)
+	c.Request.URL.Path = EndpointResponsesCompact
+	setOpsRequestContext(c, "gpt-5", false)
+	service.MarkOpenAICompactClientStream(c)
+
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, keywordSessionBlockedDecision())
+
+	requireSecurityAuditSLAExclusion(t, c, keywordSessionBlockedErrorCode)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	response, errorObject := parseResponsesFailedSSE(t, recorder.Body.String())
+	require.Equal(t, "gpt-5", response["model"])
+	require.Equal(t, "invalid_request_error", errorObject["type"])
+	require.Equal(t, "invalid_prompt", errorObject["code"])
+	require.Equal(t, keywordSessionBlockedClientMsg, errorObject["message"])
+}
+
+func TestNonKeywordSecurityAuditOnStreamingResponsesKeepsHTTPError(t *testing.T) {
+	decision := promptGuardDecision(securityaudit.DecisionBlock)
+	c, recorder := securityAuditErrorTestContext(t)
+	c.Request.URL.Path = EndpointResponses
+	setOpsRequestContext(c, "gpt-5", true)
+
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
+
+	requireSecurityAuditSLAExclusion(t, c, decision.ErrorCode)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.NotContains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
+	require.Equal(t, "permission_error", errorObject["type"])
+	require.Equal(t, decision.ErrorCode, errorObject["code"])
+}
+
+func TestKeywordContentPolicyOnStreamingChatKeepsHTTPError(t *testing.T) {
+	decision := &securityaudit.Decision{
+		Kind: securityaudit.DecisionBlock, HTTPStatus: http.StatusForbidden,
+		ErrorCode: "content_policy_violation", ClientMessage: "keyword blocked",
+		Legacy: &securityaudit.LegacyDecision{
+			Blocked: true, StatusCode: http.StatusForbidden, ErrorCode: "content_policy_violation",
+			Message: "keyword blocked", Action: service.ContentModerationActionKeywordBlock,
+		},
+	}
+	c, recorder := securityAuditErrorTestContext(t)
+	c.Request.URL.Path = EndpointChatCompletions
+	setOpsRequestContext(c, "gpt-5", true)
+
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
+
+	requireSecurityAuditSLAExclusion(t, c, "content_policy_violation")
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.NotContains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
+	require.Equal(t, "invalid_request_error", errorObject["type"])
+	require.Equal(t, "content_policy_violation", errorObject["code"])
+}
+
 func TestLegacyModerationErrorKeepsExistingClientPriority(t *testing.T) {
 	legacy := &securityaudit.Decision{
 		Kind: securityaudit.DecisionBlock, HTTPStatus: http.StatusForbidden,

@@ -34,6 +34,15 @@ func OpenAICompactClientStreamKeyForTest() string {
 	return openAICompactClientStreamKey
 }
 
+// OpenAICompactClientWantsStream reports the original downstream transport
+// intent for legacy body-signal compact requests. Their normalized upstream
+// body intentionally drops stream:true because /responses/compact is unary,
+// so callers that construct a local response must consult this marker instead
+// of the normalized request body.
+func OpenAICompactClientWantsStream(c *gin.Context) bool {
+	return openAICompactClientWantsStream(c)
+}
+
 func openAICompactClientWantsStream(c *gin.Context) bool {
 	if c == nil {
 		return false

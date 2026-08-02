@@ -19,7 +19,7 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 		return
 	}
 	markSecurityAuditSLAExcluded(c, decision)
-	if isKeywordBlockDecision(decision) || securityAuditErrorCode(decision) == keywordSessionBlockedErrorCode {
+	if isKeywordContentPolicyDecision(decision) {
 		h.writeOpenAIContentPolicyError(c, securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
 	}
@@ -37,16 +37,43 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 }
 
 func (h *OpenAIGatewayHandler) writeOpenAIContentPolicyError(c *gin.Context, code, message string) {
-	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
-		service.MarkOpsStreamError(c, "invalid_request_error", message, http.StatusBadRequest)
-		if writeResponsesFailedSSE(c, "invalid_prompt", message) {
-			return
+	compactSSECommitted := service.StopOpenAICompactSSEKeepaliveCommitted(c)
+	if compactSSECommitted || openAIContentPolicyWantsResponsesSSE(c) {
+		if _, ok := c.Writer.(http.Flusher); ok {
+			if !compactSSECommitted {
+				c.Header("Content-Type", "text/event-stream")
+				c.Header("Cache-Control", "no-store")
+				c.Header("Connection", "keep-alive")
+				c.Header("X-Accel-Buffering", "no")
+			}
+			service.MarkOpsStreamError(c, "invalid_request_error", message, http.StatusBadRequest)
+			if writeResponsesInvalidPromptSSE(c, message) {
+				return
+			}
 		}
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
 		"type": "invalid_request_error", "code": code, "message": message,
 	}})
+}
+
+func openAIContentPolicyWantsResponsesSSE(c *gin.Context) bool {
+	if !inboundIsResponses(c) {
+		return false
+	}
+	// Legacy body-signal compact removes stream:true from the normalized
+	// upstream body, while the downstream Codex client still expects Responses
+	// SSE. Preserve that original transport intent for fast local policy blocks.
+	if service.OpenAICompactClientWantsStream(c) {
+		return true
+	}
+	value, ok := c.Get(opsStreamKey)
+	if !ok {
+		return false
+	}
+	stream, _ := value.(bool)
+	return stream
 }
 
 func (h *GatewayHandler) openAISecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
@@ -178,9 +205,13 @@ func writeSecurityAuditWSError(ctx context.Context, conn *coderws.Conn, decision
 		ctx = context.Background()
 	}
 	status := securityAuditStatus(decision)
+	code := securityAuditErrorCode(decision)
+	if isKeywordContentPolicyDecision(decision) {
+		code = keywordPolicyCodexWireErrorCode
+	}
 	payload, err := json.Marshal(gin.H{
 		"event_id": "evt_prompt_guard_rejected", "type": "error", "status": status,
-		"error": gin.H{"type": "invalid_request_error", "code": securityAuditErrorCode(decision), "message": securityAuditMessage(decision)},
+		"error": gin.H{"type": "invalid_request_error", "code": code, "message": securityAuditMessage(decision)},
 	})
 	if err != nil {
 		return

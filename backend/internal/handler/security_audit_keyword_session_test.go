@@ -273,17 +273,113 @@ func TestOpenAIResponsesWebSocketKeywordBlockIsTerminalAndReconnectDeduplicates(
 	first, firstClose := run()
 	require.Equal(t, "error", first["type"])
 	require.Equal(t, float64(http.StatusBadRequest), first["status"])
-	require.Equal(t, "content_policy_violation", requireObject(t, first["error"])["code"])
+	require.Equal(t, "invalid_prompt", requireObject(t, first["error"])["code"])
 	require.Equal(t, coderws.StatusPolicyViolation, firstClose.Code)
 	require.Eventually(t, func() bool { return len(repo.logSnapshot()) == 1 }, time.Second, time.Millisecond)
 
 	second, secondClose := run()
 	require.Equal(t, "error", second["type"])
 	require.Equal(t, float64(http.StatusBadRequest), second["status"])
-	require.Equal(t, keywordSessionBlockedErrorCode, requireObject(t, second["error"])["code"])
+	require.Equal(t, "invalid_prompt", requireObject(t, second["error"])["code"])
 	require.Equal(t, coderws.StatusPolicyViolation, secondClose.Code)
 	time.Sleep(20 * time.Millisecond)
 	require.Len(t, repo.logSnapshot(), 1, "a reconnect in the blocked session must stop before another audit")
+}
+
+func TestOpenAIResponsesStreamingKeywordSessionBlockUsesInvalidPromptTerminalEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cache := &keywordSessionTestCache{}
+	moderation, repo, _ := newKeywordSessionModerationService(t)
+	h := &OpenAIGatewayHandler{
+		gatewayService:           newKeywordSessionGatewayService(cache),
+		billingCacheService:      &service.BillingCacheService{},
+		apiKeyService:            &service.APIKeyService{},
+		concurrencyHelper:        NewConcurrencyHelper(&service.ConcurrencyService{}, SSEPingFormatNone, time.Second),
+		contentModerationService: moderation,
+		securityAuditCoordinator: securityaudit.NewCoordinator(securityaudit.NewLegacyModerationAdapter(moderation), nil),
+	}
+	groupID := int64(2)
+	apiKey := &service.APIKey{
+		ID: 42, GroupID: &groupID, Group: &service.Group{Platform: service.PlatformOpenAI},
+		User: &service.User{ID: 9},
+	}
+	run := func() (*httptest.ResponseRecorder, map[string]any) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(
+			`{"model":"gpt-5","input":"blocked","stream":true}`,
+		))
+		c.Request.Header.Set("session-id", "handler-stream-session")
+		c.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 9, Concurrency: 1})
+		h.Responses(c)
+		_, errorObject := parseResponsesFailedSSE(t, recorder.Body.String())
+		return recorder, errorObject
+	}
+
+	first, firstError := run()
+	require.Equal(t, http.StatusOK, first.Code)
+	require.Contains(t, first.Header().Get("Content-Type"), "text/event-stream")
+	require.Equal(t, "invalid_request_error", firstError["type"])
+	require.Equal(t, "invalid_prompt", firstError["code"])
+	require.Equal(t, "keyword blocked", firstError["message"])
+	require.Eventually(t, func() bool { return len(repo.logSnapshot()) == 1 }, time.Second, time.Millisecond)
+
+	second, secondError := run()
+	require.Equal(t, http.StatusOK, second.Code)
+	require.Equal(t, "invalid_request_error", secondError["type"])
+	require.Equal(t, "invalid_prompt", secondError["code"])
+	require.Equal(t, keywordSessionBlockedClientMsg, secondError["message"])
+	time.Sleep(20 * time.Millisecond)
+	require.Len(t, repo.logSnapshot(), 1)
+}
+
+func TestOpenAIResponsesBodySignalCompactKeywordBlockUsesInvalidPromptTerminalEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cache := &keywordSessionTestCache{}
+	moderation, repo, _ := newKeywordSessionModerationService(t)
+	h := &OpenAIGatewayHandler{
+		gatewayService:           newKeywordSessionGatewayService(cache),
+		billingCacheService:      &service.BillingCacheService{},
+		apiKeyService:            &service.APIKeyService{},
+		concurrencyHelper:        NewConcurrencyHelper(&service.ConcurrencyService{}, SSEPingFormatNone, time.Second),
+		contentModerationService: moderation,
+		securityAuditCoordinator: securityaudit.NewCoordinator(securityaudit.NewLegacyModerationAdapter(moderation), nil),
+	}
+	groupID := int64(2)
+	apiKey := &service.APIKey{
+		ID: 42, GroupID: &groupID, Group: &service.Group{Platform: service.PlatformOpenAI},
+		User: &service.User{ID: 9},
+	}
+	run := func() (*httptest.ResponseRecorder, map[string]any) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(
+			`{"model":"gpt-5","input":[{"type":"message","role":"user","content":"blocked"},{"type":"compaction_trigger"}],"stream":true}`,
+		))
+		c.Request.Header.Set("session-id", "handler-compact-stream-session")
+		c.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 9, Concurrency: 1})
+		h.Responses(c)
+		_, errorObject := parseResponsesFailedSSE(t, recorder.Body.String())
+		return recorder, errorObject
+	}
+
+	first, firstError := run()
+	require.Equal(t, http.StatusOK, first.Code)
+	require.Contains(t, first.Header().Get("Content-Type"), "text/event-stream")
+	require.Equal(t, "invalid_request_error", firstError["type"])
+	require.Equal(t, "invalid_prompt", firstError["code"])
+	require.Equal(t, "keyword blocked", firstError["message"])
+	require.Eventually(t, func() bool { return len(repo.logSnapshot()) == 1 }, time.Second, time.Millisecond)
+
+	second, secondError := run()
+	require.Equal(t, http.StatusOK, second.Code)
+	require.Equal(t, "invalid_request_error", secondError["type"])
+	require.Equal(t, "invalid_prompt", secondError["code"])
+	require.Equal(t, keywordSessionBlockedClientMsg, secondError["message"])
+	time.Sleep(20 * time.Millisecond)
+	require.Len(t, repo.logSnapshot(), 1)
 }
 
 func TestOpenAISecurityAuditConcurrentKeywordBlockCreatesOneLog(t *testing.T) {
