@@ -967,22 +967,24 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	}
 
 	// View filter: errors vs excluded vs all.
-	// Excluded = business-limited errors or explicitly SLA-excluded errors.
-	// Upstream 429/529 are included in errors view to match SLA calculation.
+	// The errors view is the operational error feed: it hides business-limited
+	// noise, but keeps explicitly SLA-excluded errors visible for diagnosis.
+	// The excluded view is the SLA-excluded subset (business-limited or explicit).
+	// Upstream 429/529 remain visible in the errors view.
 	view := ""
 	if filter != nil {
 		view = strings.ToLower(strings.TrimSpace(filter.View))
 	}
 	switch view {
 	case "", "errors":
-		clauses = append(clauses, "COALESCE(e.is_business_limited,false) = false AND COALESCE(e.is_sla_excluded,false) = false")
+		clauses = append(clauses, "COALESCE(e.is_business_limited,false) = false")
 	case "excluded":
 		clauses = append(clauses, "(COALESCE(e.is_business_limited,false) = true OR COALESCE(e.is_sla_excluded,false) = true)")
 	case "all":
 		// no-op
 	default:
 		// treat unknown as default 'errors'
-		clauses = append(clauses, "COALESCE(e.is_business_limited,false) = false AND COALESCE(e.is_sla_excluded,false) = false")
+		clauses = append(clauses, "COALESCE(e.is_business_limited,false) = false")
 	}
 	if len(filter.StatusCodes) > 0 {
 		args = append(args, pq.Array(filter.StatusCodes))

@@ -38,16 +38,20 @@ func TestBuildOpsErrorLogsWhere_UserScopedFilters(t *testing.T) {
 	}
 }
 
-func TestBuildOpsErrorLogsWhere_SeparatesSLAExclusionsFromBusinessLimits(t *testing.T) {
-	errorsWhere, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "errors"})
-	if !strings.Contains(errorsWhere, "COALESCE(e.is_business_limited,false) = false") ||
-		!strings.Contains(errorsWhere, "COALESCE(e.is_sla_excluded,false) = false") {
-		t.Fatalf("errors view must exclude both business limits and explicit SLA exclusions: %s", errorsWhere)
+func TestBuildOpsErrorLogsWhere_KeepsExplicitSLAExclusionsVisible(t *testing.T) {
+	for _, view := range []string{"", "errors", "unknown"} {
+		errorsWhere, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: view})
+		if !strings.Contains(errorsWhere, "COALESCE(e.is_business_limited,false) = false") {
+			t.Fatalf("errors view %q must still hide business-limited noise: %s", view, errorsWhere)
+		}
+		if strings.Contains(errorsWhere, "COALESCE(e.is_sla_excluded,false) = false") {
+			t.Fatalf("errors view %q must keep explicitly SLA-excluded errors visible: %s", view, errorsWhere)
+		}
 	}
 
 	excludedWhere, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "excluded"})
 	if !strings.Contains(excludedWhere, "COALESCE(e.is_business_limited,false) = true OR COALESCE(e.is_sla_excluded,false) = true") {
-		t.Fatalf("excluded view must include both exclusion categories: %s", excludedWhere)
+		t.Fatalf("excluded view must remain an SLA-excluded subset: %s", excludedWhere)
 	}
 }
 
