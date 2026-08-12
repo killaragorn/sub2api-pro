@@ -2289,6 +2289,7 @@ accountSelectionLoop:
 			MaxReasoningEffort:      maxReasoningEffort,
 			ReasoningEffortMappings: reasoningEffortMappings,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
+				c.Set(securityAuditWSTurnContextKey, turn)
 				cyberAuditPayload = append(cyberAuditPayload[:0], payload...)
 				cyberBlockKey = cyberKeyResolver.Resolve(payload)
 				if cyberBlockKey != "" && h.gatewayService.IsCyberSessionBlocked(ctx, cyberBlockKey) {
